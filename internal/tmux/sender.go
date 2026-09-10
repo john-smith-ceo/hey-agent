@@ -88,5 +88,5 @@ func bufferName() (string, error) {
 	if _, err := rand.Read(bytes); err != nil {
 		return "", err
 	}
-	return "hey-claudex-" + hex.EncodeToString(bytes), nil
+	return "hey-agent-" + hex.EncodeToString(bytes), nil
 }

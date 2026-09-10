@@ -82,3 +82,15 @@ func TestGateTypingKeyIgnoresLongHold(t *testing.T) {
 		t.Fatalf("a long hold must not trigger the hotkey, got %+v", got)
 	}
 }
+
+func TestGateEscapeEmitsCancelWithoutHotkeyEvent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	in := make(chan raw, 2)
+	out := gate(ctx, in, Key{Name: "Alt_R", Category: Free}, SoloTimeout)
+	in <- raw{cancel: true, down: true}
+	got := drain(t, out, 1)
+	if len(got) != 1 || !got[0].Cancel || got[0].Down {
+		t.Fatalf("expected one cancel event, got %+v", got)
+	}
+}

@@ -12,55 +12,77 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
-var endpoint = "https://api.openai.com/v1/audio/transcriptions"
+const (
+	DefaultBaseURL = "https://api.openai.com/v1"
+	DefaultModel   = "gpt-transcribe"
+	RequestTimeout = 60 * time.Second
+)
 
-var listEndpoint = "https://api.openai.com/v1/models"
-
-const model = "gpt-transcribe"
+type Config struct {
+	BaseURL string
+	Model   string
+	APIKey  string
+	Timeout time.Duration
+}
 
 type Client interface {
 	Transcribe(context.Context, string) (string, error)
 }
 
-func endpointForTest(value string) func() {
-	old := endpoint
-	endpoint = value
-	return func() { endpoint = old }
+type Provider struct {
+	baseURL string
+	model   string
+	apiKey  string
+	http    *http.Client
 }
 
-func listEndpointForTest(value string) func() {
-	old := listEndpoint
-	listEndpoint = value
-	return func() { listEndpoint = old }
+func NewProvider(config Config) *Provider {
+	baseURL := strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = DefaultBaseURL
+	}
+	model := strings.TrimSpace(config.Model)
+	if model == "" {
+		model = DefaultModel
+	}
+	timeout := config.Timeout
+	if timeout <= 0 {
+		timeout = RequestTimeout
+	}
+	return &Provider{
+		baseURL: baseURL,
+		model:   model,
+		apiKey:  config.APIKey,
+		http:    &http.Client{Timeout: timeout},
+	}
 }
 
-type OpenAI struct {
-	apiKey string
-	http   *http.Client
-}
-
-func NewOpenAI(apiKey string) *OpenAI { return &OpenAI{apiKey: apiKey, http: http.DefaultClient} }
+func (p *Provider) endpoint(path string) string { return p.baseURL + "/" + strings.TrimLeft(path, "/") }
 
 // Verify checks authentication and model visibility without uploading audio.
 //
 // The model is looked up in the list rather than fetched directly: retrieving
 // gpt-transcribe by name answers 500, so a direct fetch would report a working
 // key as broken.
-func Verify(ctx context.Context, apiKey string) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, listEndpoint, nil)
+func (p *Provider) Verify(ctx context.Context) error {
+	if strings.TrimSpace(p.apiKey) == "" {
+		return errors.New("API key is empty")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.endpoint("models"), nil)
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Authorization", "Bearer "+apiKey)
-	response, err := http.DefaultClient.Do(request)
+	request.Header.Set("Authorization", "Bearer "+p.apiKey)
+	response, err := p.http.Do(request)
 	if err != nil {
 		return err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("OpenAI returned %s", response.Status)
+		return fmt.Errorf("provider returned %s", response.Status)
 	}
 	payload, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
@@ -75,16 +97,16 @@ func Verify(ctx context.Context, apiKey string) error {
 		return err
 	}
 	for _, entry := range listed.Data {
-		if entry.ID == model {
+		if entry.ID == p.model {
 			return nil
 		}
 	}
-	return fmt.Errorf("this key cannot see the %s model", model)
+	return fmt.Errorf("this key cannot see the %s model", p.model)
 }
 
-func (c *OpenAI) Transcribe(ctx context.Context, filename string) (string, error) {
-	if strings.TrimSpace(c.apiKey) == "" {
-		return "", errors.New("OpenAI API key is empty")
+func (p *Provider) Transcribe(ctx context.Context, filename string) (string, error) {
+	if strings.TrimSpace(p.apiKey) == "" {
+		return "", errors.New("API key is empty")
 	}
 	f, err := os.Open(filename)
 	if err != nil {
@@ -100,19 +122,19 @@ func (c *OpenAI) Transcribe(ctx context.Context, filename string) (string, error
 	if _, err := io.Copy(part, f); err != nil {
 		return "", err
 	}
-	if err := w.WriteField("model", model); err != nil {
+	if err := w.WriteField("model", p.model); err != nil {
 		return "", err
 	}
 	if err := w.Close(); err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint("audio/transcriptions"), &body)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Authorization", "Bearer "+p.apiKey)
 	req.Header.Set("Content-Type", w.FormDataContentType())
-	resp, err := c.http.Do(req)
+	resp, err := p.http.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -122,7 +144,7 @@ func (c *OpenAI) Transcribe(ctx context.Context, filename string) (string, error
 		return "", err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("OpenAI transcription API returned %s: %s", resp.Status, strings.TrimSpace(string(payload)))
+		return "", fmt.Errorf("provider transcription API returned %s", resp.Status)
 	}
 	var data struct {
 		Text string `json:"text"`

@@ -18,8 +18,8 @@ func path(service string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	name := strings.TrimPrefix(service, "hey-claudex.")
-	return filepath.Join(home, ".config", "hey-claudex", name), nil
+	name := strings.TrimPrefix(service, "hey-agent.")
+	return filepath.Join(home, ".config", "hey-agent", name), nil
 }
 
 func Load(service string) (string, error) {
@@ -63,7 +63,7 @@ func Save(service, value string) error {
 func Location(service string) string {
 	file, err := path(service)
 	if err != nil {
-		return "~/.config/hey-claudex"
+		return "~/.config/hey-agent"
 	}
 	return file
 }

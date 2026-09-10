@@ -3,6 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,40 +18,26 @@ import (
 	"strings"
 	"time"
 
-	"github.com/john-smith-ceo/hey-claudex/internal/bridge"
-	"github.com/john-smith-ceo/hey-claudex/internal/hotkey"
-	"github.com/john-smith-ceo/hey-claudex/internal/record"
-	"github.com/john-smith-ceo/hey-claudex/internal/secret"
-	"github.com/john-smith-ceo/hey-claudex/internal/tmux"
-	"github.com/john-smith-ceo/hey-claudex/internal/transcribe"
+	"github.com/john-smith-ceo/hey-agent/internal/bridge"
+	"github.com/john-smith-ceo/hey-agent/internal/hotkey"
+	"github.com/john-smith-ceo/hey-agent/internal/record"
+	"github.com/john-smith-ceo/hey-agent/internal/tmux"
+	"github.com/john-smith-ceo/hey-agent/internal/transcribe"
 )
 
-const keychainService = "hey-claudex.openai-api-key"
-
 // voiceWindow is the hidden tmux window the listener runs in.
-const voiceWindow = "hey-claudex-voice"
+const voiceWindow = "hey-agent-voice"
+
+const version = "0.1.3"
 
 // installNames are the names the tool is reachable under.
-var installNames = []string{"hey-claudex", "hey-claude", "hey-codex"}
+var installNames = []string{"hey-agent"}
 
-// expectedApp reads the name the binary was called by. hey-claude expects to
-// speak into Claude Code and hey-codex into Codex; the check exists so that a
-// transcription never lands in the wrong pane. Called by any other name, the
-// tool speaks into whatever is there.
 func expectedApp() string {
-	name := strings.ToLower(filepath.Base(os.Args[0]))
-	switch {
-	case strings.Contains(name, "claudex"):
-		return ""
-	case strings.Contains(name, "codex"):
-		return "codex"
-	case strings.Contains(name, "claude"):
-		return "claude"
-	}
 	return ""
 }
 
-// isOwnName reports whether the command is hey-claudex under any of its names.
+// isOwnName reports whether the command is hey-agent.
 func isOwnName(command string) bool {
 	for _, name := range installNames {
 		if command == name {
@@ -71,28 +60,32 @@ func main() {
 	if len(os.Args) < 2 {
 		os.Exit(listen(nil))
 	}
+	if os.Args[1] == "version" || os.Args[1] == "--version" {
+		fmt.Println("hey-agent", version)
+		return
+	}
 
-	// A bare flag means listen: `hey-claude --silence 2s` should not require
+	// A bare flag means listen: `hey-agent --silence 2s` should not require
 	// spelling out the only command the tool really has.
 	if strings.HasPrefix(os.Args[1], "-") && os.Args[1] != "-h" && os.Args[1] != "--help" {
 		os.Exit(listen(os.Args[1:]))
 	}
 
 	switch os.Args[1] {
-	case "listen", "join":
+	case "listen":
 		os.Exit(listen(os.Args[2:]))
+	case "config":
+		os.Exit(configure(os.Args[2:]))
 	case "keys":
 		os.Exit(listKeys(os.Stdout))
 	case "doctor":
 		os.Exit(doctor(os.Args[2:], os.Stdout))
-	case "setup-api-key":
+	case "setup-key":
 		os.Exit(setupAPIKey(os.Args[2:], os.Stdin, os.Stdout))
 	case "install":
 		os.Exit(install(os.Stdout))
 	case "stop":
 		os.Exit(stop(os.Args[2:]))
-	case "uninstall":
-		os.Exit(uninstall(os.Args[2:]))
 	case "run":
 		os.Exit(run(os.Args[2:]))
 	case "help", "--help", "-h":
@@ -105,13 +98,11 @@ func main() {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, `hey-claudex — голосовой ввод в панель, где вы уже работаете
+	fmt.Fprint(w, `hey-agent — голосовой ввод в явно выбранную tmux-панель
 
 Самый простой старт
-  hey-claude
-      Включит голосовой ввод в текущей панели tmux, где идёт Claude Code.
-  hey-codex
-      То же самое для панели с Codex.
+	  hey-agent listen
+	      Включит голосовой ввод в текущей панели tmux.
 
 Как говорить
   1. Нажмите правый Alt (на маке — правый Option) один раз.
@@ -122,36 +113,30 @@ func usage(w io.Writer) {
      С флагом --submit он уходит сразу, без проверки.
 
 Первый запуск
-  hey-claudex setup-api-key
-      Сохранит ваш OpenAI API key: на macOS — в Keychain, на Linux —
-      в ~/.config/hey-claudex, доступный только вам.
-  hey-claudex doctor
+	  hey-agent setup-key
+	      Сохранит ключ провайдера в tools/hey-agent/.env с правами 600.
+	  hey-agent doctor
       Проверит микрофон, tmux, ffmpeg, горячую клавишу и ключ.
 
 Полезные команды
-  hey-claude, hey-codex      Включить голос в текущей панели.
-  hey-claudex listen         То же, но без проверки, что за приложение
-                             в панели.
-  hey-claudex stop           Остановить голосовой ввод.
-  hey-claudex keys           Показать клавиши, которые можно назначить.
-  hey-claudex listen --key Shift_L
+	  hey-agent listen           Включить голос в текущей панели.
+	  hey-agent config           Изменить режим следующей записи.
+	  hey-agent version          Показать версию.
+	  hey-agent stop             Остановить голосовой ввод.
+	  hey-agent keys             Показать клавиши, которые можно назначить.
+	  hey-agent listen --key Shift_L
                              Назначить свою клавишу.
-  hey-claudex listen --mode push
-                             Говорить, пока клавиша удерживается.
-  hey-claude --submit        Отправлять сразу: замолчали или отпустили
+	  hey-agent listen --mode push
+	                             Говорить, пока клавиша удерживается.
+	  hey-agent listen --submit Отправлять сразу: замолчали или отпустили
                              клавишу — текст ушёл.
-  hey-claudex doctor --verify-api
+	  hey-agent doctor --verify-api
                              Проверить доступ к OpenAI без отправки аудио.
-
-Имена вызова
-  hey-claude ждёт в панели Claude Code, hey-codex — Codex. Если там
-  работает другое, инструмент откажется и скажет, что именно видит:
-  текст, ушедший не в то окно, хуже неуслышанного. Обойти — флаг --any.
 
 Строка tmux
   Состояние видно внизу терминала: mode:tap, rec…, transcribe…, done
   или error. Когда включена отправка без проверки, режим показан
-  как mode:tap auto — чтобы это не оказалось неожиданностью. В вашей сессии hey-claudex только дописывает значок справа,
+	  как mode:tap auto — чтобы это не оказалось неожиданностью. В вашей сессии hey-agent только дописывает значок справа,
   а прежнее содержимое возвращает при остановке. Ваше оформление
   остаётся вашим.
 
@@ -174,10 +159,10 @@ func usage(w io.Writer) {
     --on-record "jarvis-voice hush"
                              Оборвать то, что уже звучит: меткой этого
                              не сделать, фраза договорила бы до конца.
-  Оба берутся и из окружения: HEY_CLAUDEX_BUSY_FILE, HEY_CLAUDEX_ON_RECORD.
+	  Оба берутся и из окружения: HEY_AGENT_BUSY_FILE, HEY_AGENT_ON_RECORD.
 
 Безопасность
-  hey-claudex ничего не запускает: он работает только в панели, которая
+	  hey-agent ничего не запускает: он работает только в панели, которая
   уже открыта, и говорит только в неё — без поиска активного окна.
   Пустую расшифровку не отправляет никогда.
 
@@ -249,28 +234,33 @@ func doctor(args []string, w io.Writer) int {
 	} else {
 		fmt.Fprintf(w, "ok   hotkey     %s available\n", hotKey.Name)
 	}
-	key := os.Getenv("HEY_CLAUDEX_OPENAI_API_KEY")
+	key := os.Getenv("HEY_AGENT_API_KEY")
 	if key == "" {
-		key, _ = secret.Load(keychainService)
+		key, _ = loadDotenvKey(agentEnvFile())
 	}
 	if key != "" {
-		fmt.Fprintln(w, "ok   OpenAI API key available")
+		fmt.Fprintln(w, "ok   provider API key available")
 		if *verifyAPI {
-			if err := transcribe.Verify(context.Background(), key); err != nil {
-				fmt.Fprintln(w, "fail OpenAI API access:", err)
+			provider := transcribe.NewProvider(transcribe.Config{
+				APIKey:  key,
+				BaseURL: os.Getenv("HEY_AGENT_BASE_URL"),
+				Model:   os.Getenv("HEY_AGENT_MODEL"),
+			})
+			if err := provider.Verify(context.Background()); err != nil {
+				fmt.Fprintln(w, "fail provider API access:", err)
 				failures++
 			} else {
-				fmt.Fprintln(w, "ok   OpenAI API access to gpt-transcribe")
+				fmt.Fprintln(w, "ok   provider API access")
 			}
 		}
 	} else {
-		fmt.Fprintln(w, "fail OpenAI API key missing (run: hey-claudex setup-api-key)")
+		fmt.Fprintln(w, "fail API key missing (run: hey-agent setup-key)")
 		failures++
 	}
 	if runtime.GOOS == "darwin" {
 		fmt.Fprintln(w, "note grant Microphone and Accessibility permission to the launcher application before run")
 	} else {
-		fmt.Fprintln(w, "note hey-claudex needs an X11 session; Wayland is not supported yet")
+		fmt.Fprintln(w, "note hey-agent needs an X11 session; Wayland is not supported yet")
 	}
 	if failures > 0 {
 		return 1
@@ -279,7 +269,7 @@ func doctor(args []string, w io.Writer) int {
 }
 
 func setupAPIKey(args []string, in io.Reader, out io.Writer) int {
-	fs := flag.NewFlagSet("setup-api-key", flag.ContinueOnError)
+	fs := flag.NewFlagSet("setup-key", flag.ContinueOnError)
 	envFile := fs.String("env-file", "", "read OPENAI_API_KEY from a dotenv file")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -293,7 +283,7 @@ func setupAPIKey(args []string, in io.Reader, out io.Writer) int {
 		}
 		key = loaded
 	} else {
-		fmt.Fprint(out, "OpenAI API key: ")
+		fmt.Fprint(out, "Provider API key: ")
 		if file, ok := in.(*os.File); ok && file == os.Stdin {
 			if err := exec.Command("stty", "-echo").Run(); err == nil {
 				defer func() {
@@ -309,12 +299,41 @@ func setupAPIKey(args []string, in io.Reader, out io.Writer) int {
 		}
 		key = strings.TrimSpace(entered)
 	}
-	if err := secret.Save(keychainService, key); err != nil {
+	if err := saveDotenvKey(agentEnvFile(), key); err != nil {
 		fmt.Fprintln(os.Stderr, "save API key:", err)
 		return 1
 	}
-	fmt.Fprintln(out, "saved:", secret.Location(keychainService))
+	fmt.Fprintln(out, "saved:", agentEnvFile())
 	return 0
+}
+
+func agentEnvFile() string {
+	if path := strings.TrimSpace(os.Getenv("HEY_AGENT_ENV_FILE")); path != "" {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "tools/hey-agent/.env"
+	}
+	return filepath.Join(home, "Projects", "tools", "hey-agent", ".env")
+}
+
+func saveDotenvKey(path, key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return errors.New("API key is empty")
+	}
+	if strings.ContainsAny(key, "\r\n") {
+		return errors.New("API key must be a single line")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	contents := "HEY_AGENT_API_KEY=" + strings.TrimSpace(key) + "\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 func loadDotenvKey(path string) (string, error) {
@@ -347,8 +366,9 @@ func loadDotenvKey(path string) (string, error) {
 // Both spellings occur in the wild, and a key file is not worth renaming just
 // to satisfy a parser.
 var dotenvKeyNames = map[string]bool{
-	"OPENAI_API_KEY":  true,
-	"OPEN_AI_API_KEY": true,
+	"HEY_AGENT_API_KEY": true,
+	"OPENAI_API_KEY":    true,
+	"OPEN_AI_API_KEY":   true,
 }
 
 // install links the built binary under all three names. The aliases are not
@@ -402,13 +422,14 @@ func run(args []string) int {
 	mode := fs.String("mode", "tap", "recording mode: tap or push")
 	silence := fs.Duration("silence", 5*time.Second, "tap-mode silence timeout")
 	device := fs.String("device", record.DefaultDevice(), "audio input device")
-	busyFile := fs.String("busy-file", os.Getenv("HEY_CLAUDEX_BUSY_FILE"), "file to touch while recording, so voice-overs stay quiet")
-	onRecord := fs.String("on-record", os.Getenv("HEY_CLAUDEX_ON_RECORD"), "shell command run when recording starts")
+	busyFile := fs.String("busy-file", os.Getenv("HEY_AGENT_BUSY_FILE"), "file to touch while recording, so voice-overs stay quiet")
+	onRecord := fs.String("on-record", os.Getenv("HEY_AGENT_ON_RECORD"), "shell command run when recording starts")
 	submit := fs.Bool("submit", false, "press Enter after the transcription lands")
 	submitDelay := fs.Duration("submit-delay", tmux.DefaultSubmitDelay, "pause between the paste and Enter")
-	keyName := fs.String("key", hotkey.Default, "hotkey; run: hey-claudex keys")
-	tmuxTarget := fs.String("tmux-target", "hey-claudex:0.0", "tmux pane receiving transcriptions")
-	tmuxSession := fs.String("tmux-session", "hey-claudex", "tmux session owning the hey-claudex status line")
+	keyName := fs.String("key", hotkey.Default, "hotkey; run: hey-agent keys")
+	tmuxTarget := fs.String("tmux-target", "hey-agent:0.0", "tmux pane receiving transcriptions")
+	tmuxSession := fs.String("tmux-session", "hey-agent", "tmux session owning the hey-agent status line")
+	runtimeConfig := fs.String("runtime-config", "", "runtime settings file")
 
 	attached := fs.Bool("attached", false, "the session belongs to the user: borrow the status line instead of taking it")
 	if err := fs.Parse(args); err != nil {
@@ -448,7 +469,7 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "configure tmux status:", err)
 		return 1
 	}
-	app, err := bridge.New(bridge.Config{Mode: bridge.Mode(*mode), Silence: *silence, Device: *device, APIKey: key, Log: os.Stderr, State: func(state string) {
+	app, err := bridge.New(bridge.Config{Mode: bridge.Mode(*mode), Silence: *silence, Device: *device, APIKey: key, BaseURL: os.Getenv("HEY_AGENT_BASE_URL"), Model: os.Getenv("HEY_AGENT_MODEL"), Log: os.Stderr, RuntimeConfig: *runtimeConfig, State: func(state string) {
 		if err := status.Set(context.Background(), state); err != nil {
 			fmt.Fprintln(os.Stderr, "update tmux status:", err)
 		}
@@ -457,7 +478,7 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "initialize:", err)
 		return 1
 	}
-	fmt.Fprintf(os.Stderr, "hey-claudex ready: %s (%s mode), target %s; Ctrl+C stops the listener\n", hotKey.Name, *mode, *tmuxTarget)
+	fmt.Fprintf(os.Stderr, "hey-agent ready: %s (%s mode), target %s; Ctrl+C stops the listener\n", hotKey.Name, *mode, *tmuxTarget)
 	runErr := app.Run(context.Background())
 	if err := status.Restore(context.Background()); err != nil {
 		fmt.Fprintln(os.Stderr, "restore tmux status:", err)
@@ -466,7 +487,127 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "run:", runErr)
 		return 1
 	}
+	if *runtimeConfig != "" {
+		_ = os.Remove(*runtimeConfig)
+	}
 	return 0
+}
+
+type runtimeSettings struct {
+	Mode    string `json:"mode"`
+	Silence string `json:"silence"`
+	Submit  bool   `json:"submit"`
+}
+
+func configure(args []string) int {
+	fs := flag.NewFlagSet("config", flag.ContinueOnError)
+	mode := fs.String("mode", "", "next recording mode: tap or push")
+	silence := fs.String("silence", "", "pause ending tap-mode recording, for example 2s")
+	submit := fs.Bool("submit", false, "submit the next transcription automatically")
+	noSubmit := fs.Bool("no-submit", false, "do not submit the next transcription automatically")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *mode != "" && *mode != "tap" && *mode != "push" {
+		fmt.Fprintln(os.Stderr, "--mode must be tap or push")
+		return 2
+	}
+	if *submit && *noSubmit {
+		fmt.Fprintln(os.Stderr, "--submit and --no-submit cannot be used together")
+		return 2
+	}
+	if *silence != "" {
+		d, err := time.ParseDuration(*silence)
+		if err != nil || d <= 0 {
+			fmt.Fprintln(os.Stderr, "--silence must be a positive duration, for example 2s")
+			return 2
+		}
+	}
+	if !insideTmux() {
+		fmt.Fprintln(os.Stderr, "hey-agent config must run inside the tmux session being listened to")
+		return 2
+	}
+	session, err := currentSession()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	path := runtimeConfigPath(session)
+	settings, err := loadRuntimeSettings(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "listener is not running in %q; start it with: hey-agent listen\n", session)
+		return 1
+	}
+	if flagWasSet(fs, "mode") {
+		settings.Mode = *mode
+	}
+	if flagWasSet(fs, "silence") {
+		settings.Silence = *silence
+	}
+	if *submit {
+		settings.Submit = true
+	}
+	if *noSubmit {
+		settings.Submit = false
+	}
+	if err := saveRuntimeSettings(path, settings); err != nil {
+		fmt.Fprintln(os.Stderr, "save listener settings:", err)
+		return 1
+	}
+	fmt.Printf("Следующая запись: mode=%s silence=%s submit=%t\n", settings.Mode, settings.Silence, settings.Submit)
+	return 0
+}
+
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	wasSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			wasSet = true
+		}
+	})
+	return wasSet
+}
+
+func runtimeConfigPath(session string) string {
+	sum := sha256.Sum256([]byte(session))
+	return filepath.Join(os.TempDir(), "hey-agent-"+hex.EncodeToString(sum[:8])+".json")
+}
+
+func loadRuntimeSettings(path string) (runtimeSettings, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return runtimeSettings{}, err
+	}
+	var settings runtimeSettings
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return runtimeSettings{}, err
+	}
+	return settings, nil
+}
+
+func saveRuntimeSettings(path string, settings runtimeSettings) error {
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".hey-agent-config-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 // listen attaches to the session the user is already in: the transcription goes
@@ -474,20 +615,19 @@ func run(args []string) int {
 func listen(args []string) int {
 	fs := flag.NewFlagSet("listen", flag.ContinueOnError)
 	mode := fs.String("mode", "tap", "voice mode: tap or push")
-	keyName := fs.String("key", hotkey.Default, "hotkey; run: hey-claudex keys")
+	keyName := fs.String("key", hotkey.Default, "hotkey; run: hey-agent keys")
 	target := fs.String("target", "", "tmux pane receiving transcriptions (default: the pane you run this from)")
-	any := fs.Bool("any", false, "speak into the pane whatever runs in it")
 	silence := fs.Duration("silence", 5*time.Second, "how long a pause ends the recording in tap mode")
 	device := fs.String("device", record.DefaultDevice(), "audio input device")
-	busyFile := fs.String("busy-file", os.Getenv("HEY_CLAUDEX_BUSY_FILE"), "file to touch while recording, so voice-overs stay quiet")
-	onRecord := fs.String("on-record", os.Getenv("HEY_CLAUDEX_ON_RECORD"), "shell command run when recording starts")
+	busyFile := fs.String("busy-file", os.Getenv("HEY_AGENT_BUSY_FILE"), "file to touch while recording, so voice-overs stay quiet")
+	onRecord := fs.String("on-record", os.Getenv("HEY_AGENT_ON_RECORD"), "shell command run when recording starts")
 	submit := fs.Bool("submit", false, "press Enter after the transcription lands")
 	submitDelay := fs.Duration("submit-delay", tmux.DefaultSubmitDelay, "pause between the paste and Enter")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if !insideTmux() {
-		fmt.Fprintln(os.Stderr, "hey-claudex speaks into a pane you are already working in, so it needs tmux.")
+		fmt.Fprintln(os.Stderr, "hey-agent speaks into a pane you are already working in, so it needs tmux.")
 		fmt.Fprintln(os.Stderr, "open tmux, start your assistant there, and call this from that pane.")
 		return 2
 	}
@@ -516,44 +656,32 @@ func listen(args []string) int {
 		fmt.Fprintln(os.Stderr, "cannot tell which pane to speak into; pass --target")
 		return 1
 	}
-	// The name the tool was called by states the intent. Speaking into a pane
-	// running something else is almost always a mistake, and a transcription in
-	// the wrong window is worse than no transcription.
-	if want := expectedApp(); want != "" && !*any {
-		running := paneCommand(pane)
-		if isOwnName(running) {
-			// The tool itself is the foreground process, which means the pane
-			// holds a shell rather than an assistant.
-			fmt.Fprintf(os.Stderr, "no %s is running in this pane.\n", want)
-			fmt.Fprintf(os.Stderr, "call %s from the pane where %s works, or repeat with --any to speak into this one.\n", filepath.Base(os.Args[0]), want)
-			return 1
-		}
-		if running != "" && running != want {
-			fmt.Fprintf(os.Stderr, "%s expects %s in this pane, but %s is running there.\n", filepath.Base(os.Args[0]), want, running)
-			fmt.Fprintf(os.Stderr, "call it from a %s pane, or repeat with --any to speak into this one anyway.\n", want)
-			return 1
-		}
-	}
 	session, err := currentSession()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	if tmuxWindowExists(session, voiceWindow) {
-		fmt.Fprintf(os.Stderr, "hey-claudex is already listening in %q; stop it with: hey-claudex stop\n", session)
+		fmt.Fprintf(os.Stderr, "hey-agent is already listening in %q; stop it with: hey-agent stop\n", session)
+		return 1
+	}
+	settingsPath := runtimeConfigPath(session)
+	if err := saveRuntimeSettings(settingsPath, runtimeSettings{Mode: *mode, Silence: silence.String(), Submit: *submit}); err != nil {
+		fmt.Fprintln(os.Stderr, "save listener settings:", err)
 		return 1
 	}
 	executable, err := os.Executable()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "locate hey-claudex executable:", err)
+		fmt.Fprintln(os.Stderr, "locate hey-agent executable:", err)
 		return 1
 	}
-	command := []string{"new-window", "-d", "-t", session, "-n", voiceWindow, "-c", mustGetwd(), executable,
+	command := []string{"new-window", "-d", "-t", tmuxSessionTarget(session), "-n", voiceWindow, "-c", mustGetwd(), executable,
 		"run", "--attached", "--mode", *mode, "--key", hotKey.Name, "--tmux-target", pane, "--tmux-session", session,
 		"--silence", silence.String(), "--device", *device,
 		"--busy-file", *busyFile, "--on-record", *onRecord,
-		"--submit=" + strconv.FormatBool(*submit), "--submit-delay", submitDelay.String()}
+		"--submit=" + strconv.FormatBool(*submit), "--submit-delay", submitDelay.String(), "--runtime-config", settingsPath}
 	if output, err := exec.Command("tmux", command...).CombinedOutput(); err != nil {
+		_ = os.Remove(settingsPath)
 		fmt.Fprintln(os.Stderr, "start voice listener:", strings.TrimSpace(string(output)))
 		return 1
 	}
@@ -562,12 +690,12 @@ func listen(args []string) int {
 	} else {
 		fmt.Printf("Слушаю: %s (%s, пауза %s). Речь придёт в панель %s — проверьте текст и нажмите Enter сами.\n", hotKey.Name, *mode, *silence, pane)
 	}
-	fmt.Println("Остановить: hey-claudex stop")
+	fmt.Println("Остановить: hey-agent stop")
 	return 0
 }
 
 // stop removes the listener and puts the borrowed status line back. The user's
-// session is never killed: hey-claudex did not create it and has no business
+// session is never killed: hey-agent did not create it and has no business
 // taking it down.
 func stop(args []string) int {
 	fs := flag.NewFlagSet("stop", flag.ContinueOnError)
@@ -575,7 +703,7 @@ func stop(args []string) int {
 		return 2
 	}
 	if !insideTmux() {
-		fmt.Fprintln(os.Stderr, "run this from the tmux session where hey-claudex is listening")
+		fmt.Fprintln(os.Stderr, "run this from the tmux session where hey-agent is listening")
 		return 2
 	}
 	current, err := currentSession()
@@ -587,10 +715,11 @@ func stop(args []string) int {
 	// The borrowed status line still has to be given back, so cleaning up runs
 	// either way.
 	if tmuxWindowExists(current, voiceWindow) {
-		if output, err := exec.Command("tmux", "kill-window", "-t", current+":"+voiceWindow).CombinedOutput(); err != nil {
+		if output, err := exec.Command("tmux", "kill-window", "-t", tmuxSessionTarget(current)+voiceWindow).CombinedOutput(); err != nil {
 			fmt.Fprintln(os.Stderr, "stop listener:", strings.TrimSpace(string(output)))
 			return 1
 		}
+		_ = os.Remove(runtimeConfigPath(current))
 		restored, err := tmux.Restore(context.Background(), current)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "restore tmux status:", err)
@@ -608,10 +737,11 @@ func stop(args []string) int {
 		return 1
 	}
 	if restored {
+		_ = os.Remove(runtimeConfigPath(current))
 		fmt.Printf("Слушателя уже не было, но строка состояния сессии %q осталась занятой — вернул.\n", current)
 		return 0
 	}
-	fmt.Fprintf(os.Stderr, "nothing to stop: hey-claudex is not listening in %q\n", current)
+	fmt.Fprintf(os.Stderr, "nothing to stop: hey-agent is not listening in %q\n", current)
 	return 1
 }
 
@@ -629,56 +759,19 @@ func currentSession() (string, error) {
 	return name, nil
 }
 
-// uninstall removes the developer-installed command. Homebrew removes its own
-// binary; --purge-key additionally removes the API key from the login Keychain.
-func uninstall(args []string) int {
-	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
-	purgeKey := fs.Bool("purge-key", false, "also remove the OpenAI API key from macOS Keychain")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	_ = stop(nil)
-	executable, err := os.Executable()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "locate executable:", err)
-		return 1
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "locate home directory:", err)
-		return 1
-	}
-	for _, name := range installNames {
-		target := filepath.Join(home, ".local", "bin", name)
-		if current, err := filepath.EvalSymlinks(target); err == nil && current == executable {
-			if err := os.Remove(target); err != nil {
-				fmt.Fprintln(os.Stderr, "remove developer symlink:", err)
-				return 1
-			}
-		}
-	}
-	if *purgeKey {
-		if err := exec.Command("security", "delete-generic-password", "-s", keychainService).Run(); err != nil {
-			fmt.Fprintln(os.Stderr, "remove Keychain key:", err)
-			return 1
-		}
-	}
-	return 0
-}
-
 func openAIKey() (string, error) {
-	if key := strings.TrimSpace(os.Getenv("HEY_CLAUDEX_OPENAI_API_KEY")); key != "" {
+	if key := strings.TrimSpace(os.Getenv("HEY_AGENT_API_KEY")); key != "" {
 		return key, nil
 	}
-	key, err := secret.Load(keychainService)
+	key, err := loadDotenvKey(agentEnvFile())
 	if err == nil && strings.TrimSpace(key) != "" {
 		return key, nil
 	}
-	return "", errors.New("OpenAI API key missing; run hey-claudex setup-api-key")
+	return "", fmt.Errorf("API key missing; run hey-agent setup-key (env file: %s)", agentEnvFile())
 }
 
 func tmuxWindowExists(session, name string) bool {
-	output, err := exec.Command("tmux", "list-windows", "-t", session, "-F", "#{window_name}").Output()
+	output, err := exec.Command("tmux", "list-windows", "-t", tmuxSessionTarget(session), "-F", "#{window_name}").Output()
 	if err != nil {
 		return false
 	}
@@ -689,6 +782,12 @@ func tmuxWindowExists(session, name string) bool {
 	}
 	return false
 }
+
+// tmuxSessionTarget makes a session name unambiguous. Without the trailing
+// colon, a numeric session name such as "1" is parsed by tmux as window index
+// 1. That makes `new-window -t 1` fail with "index 1 in use" instead of
+// creating a window in session "1".
+func tmuxSessionTarget(session string) string { return session + ":" }
 
 func mustGetwd() string {
 	wd, err := os.Getwd()

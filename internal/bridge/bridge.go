@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,10 +15,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/john-smith-ceo/hey-claudex/internal/hotkey"
-	"github.com/john-smith-ceo/hey-claudex/internal/record"
-	"github.com/john-smith-ceo/hey-claudex/internal/tmux"
-	"github.com/john-smith-ceo/hey-claudex/internal/transcribe"
+	"github.com/john-smith-ceo/hey-agent/internal/hotkey"
+	"github.com/john-smith-ceo/hey-agent/internal/record"
+	"github.com/john-smith-ceo/hey-agent/internal/tmux"
+	"github.com/john-smith-ceo/hey-agent/internal/transcribe"
 )
 
 type Mode string
@@ -32,6 +33,8 @@ type Config struct {
 	Silence    time.Duration
 	Device     string
 	APIKey     string
+	BaseURL    string
+	Model      string
 	Log        io.Writer
 	State      func(string)
 	TmuxTarget string
@@ -52,6 +55,8 @@ type Config struct {
 	Submit bool
 	// SubmitDelay overrides the pause before Enter for a slow application.
 	SubmitDelay time.Duration
+	// RuntimeConfig is an atomically-written JSON file reloaded between recordings.
+	RuntimeConfig string
 }
 
 type Bridge struct {
@@ -59,12 +64,22 @@ type Bridge struct {
 	hotkey     hotkey.Listener
 	recorder   record.Recorder
 	transcribe transcribe.Client
-	sender     *tmux.Sender
+	sender     sender
+
+	settingsMu sync.RWMutex
+	mode       Mode
+	silence    time.Duration
+	submit     bool
 
 	mu        sync.Mutex
 	recording bool
 	cancel    context.CancelFunc
 	session   uint64
+}
+
+type sender interface {
+	Send(context.Context, string, bool) error
+	Target() string
 }
 
 func New(config Config) (*Bridge, error) {
@@ -95,11 +110,18 @@ func New(config Config) (*Bridge, error) {
 		return nil, err
 	}
 	return &Bridge{
-		config:     config,
-		hotkey:     listener,
-		recorder:   record.NewFFmpeg(config.Device, config.Silence),
-		transcribe: transcribe.NewOpenAI(config.APIKey),
-		sender:     sender,
+		config:   config,
+		hotkey:   listener,
+		recorder: record.NewFFmpeg(config.Device, config.Silence),
+		transcribe: transcribe.NewProvider(transcribe.Config{
+			APIKey:  config.APIKey,
+			BaseURL: config.BaseURL,
+			Model:   config.Model,
+		}),
+		sender:  sender,
+		mode:    config.Mode,
+		silence: config.Silence,
+		submit:  config.Submit,
 	}, nil
 }
 
@@ -109,6 +131,9 @@ func (b *Bridge) Run(parent context.Context) error {
 	events, err := b.hotkey.Start(ctx)
 	if err != nil {
 		return err
+	}
+	if b.config.RuntimeConfig != "" {
+		go b.watchRuntimeConfig(ctx)
 	}
 	for {
 		select {
@@ -125,7 +150,12 @@ func (b *Bridge) Run(parent context.Context) error {
 }
 
 func (b *Bridge) handle(event hotkey.Event) {
-	switch b.config.Mode {
+	// Escape — отмена: запись гаснет без транскрибации, независимо от режима.
+	if event.Cancel {
+		b.stop(false)
+		return
+	}
+	switch b.currentMode() {
 	case Push:
 		if event.Down {
 			b.start(false)
@@ -153,6 +183,7 @@ func (b *Bridge) start(autoStop bool) {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	recorder, submit := b.currentRecordingSettings()
 	b.session++
 	session := b.session
 	b.recording, b.cancel = true, cancel
@@ -161,7 +192,7 @@ func (b *Bridge) start(autoStop bool) {
 	b.markBusy()
 	go func() {
 		startedAt := time.Now()
-		file, err := b.recorder.Record(ctx, autoStop)
+		file, err := recorder.Record(ctx, autoStop)
 		recorded := time.Since(startedAt)
 		b.clearBusy()
 		b.mu.Lock()
@@ -191,7 +222,7 @@ func (b *Bridge) start(autoStop bool) {
 			return
 		}
 		deliverStart := time.Now()
-		if err := b.sender.Send(context.Background(), text, b.config.Submit); err != nil {
+		if err := b.sender.Send(context.Background(), text, submit); err != nil {
 			b.fail("tmux delivery failed:", err)
 			return
 		}
@@ -200,7 +231,7 @@ func (b *Bridge) start(autoStop bool) {
 		// answered by feel; these three numbers answer it with facts.
 		fmt.Fprintf(b.config.Log, "timing: record %s, transcribe %s, deliver %s, chars %d\n",
 			round(recorded), round(transcribed), round(delivered), len(text))
-		if b.config.Submit {
+		if submit {
 			fmt.Fprintf(b.config.Log, "transcription delivered and submitted to tmux %s\n", b.sender.Target())
 		} else {
 			fmt.Fprintf(b.config.Log, "transcription delivered to tmux %s; review it and press Enter yourself\n", b.sender.Target())
@@ -210,6 +241,69 @@ func (b *Bridge) start(autoStop bool) {
 	}()
 }
 
+type runtimeSettings struct {
+	Mode    string `json:"mode"`
+	Silence string `json:"silence"`
+	Submit  bool   `json:"submit"`
+}
+
+func (b *Bridge) currentMode() Mode {
+	b.settingsMu.RLock()
+	defer b.settingsMu.RUnlock()
+	return b.mode
+}
+
+func (b *Bridge) currentRecordingSettings() (record.Recorder, bool) {
+	b.settingsMu.RLock()
+	defer b.settingsMu.RUnlock()
+	return b.recorder, b.submit
+}
+
+func (b *Bridge) watchRuntimeConfig(ctx context.Context) {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	var last runtimeSettings
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			data, err := os.ReadFile(b.config.RuntimeConfig)
+			if err != nil {
+				continue
+			}
+			var settings runtimeSettings
+			if err := json.Unmarshal(data, &settings); err != nil || settings == last {
+				continue
+			}
+			if settings.Mode != string(Tap) && settings.Mode != string(Push) {
+				continue
+			}
+			if settings.Mode == string(Push) && !b.config.Key.SupportsPush() {
+				continue
+			}
+			silence, err := time.ParseDuration(settings.Silence)
+			if err != nil || silence <= 0 {
+				continue
+			}
+			b.mu.Lock()
+			recording := b.recording
+			b.mu.Unlock()
+			if recording {
+				continue
+			}
+			b.settingsMu.Lock()
+			b.mode = Mode(settings.Mode)
+			b.silence = silence
+			b.submit = settings.Submit
+			b.recorder = record.NewFFmpeg(b.config.Device, silence)
+			b.settingsMu.Unlock()
+			last = settings
+			fmt.Fprintf(b.config.Log, "runtime settings: mode=%s silence=%s submit=%t\n", settings.Mode, settings.Silence, settings.Submit)
+		}
+	}
+}
+
 func (b *Bridge) stop(transcribe bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -217,7 +311,11 @@ func (b *Bridge) stop(transcribe bool) {
 		return
 	}
 	fmt.Fprintln(b.config.Log, "recording stopped")
-	b.state("transcribing")
+	if transcribe {
+		b.state("transcribing")
+	} else {
+		b.state("idle")
+	}
 	b.cancel()
 	if !transcribe {
 		b.session++

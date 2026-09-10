@@ -14,6 +14,7 @@ static CFMachPortRef globalKeyTap = NULL;
 static int64_t targetKeycode = 61;
 static uint64_t targetMask = kCGEventFlagMaskAlternate;
 static int swallowTarget = 1;
+static const int64_t cancelKeycode = 53; // Escape
 
 static void configureKeyTap(int64_t keycode, uint64_t mask, int swallow) {
 	targetKeycode = keycode;
@@ -27,9 +28,15 @@ static CGEventRef keyTap(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
 		return event;
 	}
 	// An ordinary key going down never belongs to the hotkey, but it does tell
-	// the solo detector that a held modifier was doing its normal job.
+	// the solo detector that a held modifier was doing its normal job. Escape
+	// is the one exception: it reports a cancel while staying an ordinary key
+	// for the application under it.
 	if (type == kCGEventKeyDown) {
-		goKeyEvent(0, 1);
+		if (CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode) == cancelKeycode) {
+			goKeyEvent(2, 1);
+		} else {
+			goKeyEvent(0, 1);
+		}
 		return event;
 	}
 	if (type != kCGEventFlagsChanged) {
@@ -82,7 +89,7 @@ func GlobalSupported() bool { return true }
 // New returns a listener for the configured key.
 func New(key Key) (Listener, error) {
 	if !key.AvailableOnDarwin() {
-		return nil, fmt.Errorf("no Apple keyboard has a %s key; run: hey-claudex keys", key.Name)
+		return nil, fmt.Errorf("no Apple keyboard has a %s key; run: hey-agent keys", key.Name)
 	}
 	return darwinTap{key: key}, nil
 }
@@ -128,7 +135,7 @@ func goKeyEvent(target C.int, down C.int) {
 		return
 	}
 	select {
-	case events <- raw{target: target != 0, down: down != 0}:
+	case events <- raw{target: target == 1, down: down != 0, cancel: target == 2}:
 	default:
 	}
 }

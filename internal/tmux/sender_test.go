@@ -10,7 +10,7 @@ import (
 
 func TestSenderPastesAndSubmits(t *testing.T) {
 	logPath, stdinPath := installFakeTmux(t)
-	sender, err := New("hey-claudex:0.0")
+	sender, err := New("hey-agent:0.0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,13 +24,13 @@ func TestSenderPastesAndSubmits(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("expected three tmux commands, got %d:\n%s", len(lines), commands)
 	}
-	if !strings.HasPrefix(lines[0], "load-buffer -b hey-claudex-") {
+	if !strings.HasPrefix(lines[0], "load-buffer -b hey-agent-") {
 		t.Fatalf("unexpected load command: %s", lines[0])
 	}
-	if !strings.Contains(lines[1], "paste-buffer -d -b hey-claudex-") || !strings.HasSuffix(lines[1], "-t hey-claudex:0.0") {
+	if !strings.Contains(lines[1], "paste-buffer -d -b hey-agent-") || !strings.HasSuffix(lines[1], "-t hey-agent:0.0") {
 		t.Fatalf("unexpected paste command: %s", lines[1])
 	}
-	if lines[2] != "send-keys -t hey-claudex:0.0 Enter" {
+	if lines[2] != "send-keys -t hey-agent:0.0 Enter" {
 		t.Fatalf("unexpected submit command: %s", lines[2])
 	}
 	if got := readTestFile(t, stdinPath); got != "hello from voice" {
@@ -40,7 +40,7 @@ func TestSenderPastesAndSubmits(t *testing.T) {
 
 func TestSenderCanPasteWithoutSubmitting(t *testing.T) {
 	logPath, _ := installFakeTmux(t)
-	sender, err := New("hey-claudex:0.0")
+	sender, err := New("hey-agent:0.0")
 	if err != nil {
 		t.Fatal(err)
 	}

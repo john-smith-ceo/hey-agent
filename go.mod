@@ -1,3 +1,3 @@
-module github.com/john-smith-ceo/hey-claudex
+module github.com/john-smith-ceo/hey-agent
 
 go 1.24.0

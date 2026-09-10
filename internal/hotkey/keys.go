@@ -90,7 +90,7 @@ func Lookup(name string) (Key, error) {
 			}
 		}
 	}
-	return Key{}, fmt.Errorf("unknown key %q; run: hey-claudex keys", name)
+	return Key{}, fmt.Errorf("unknown key %q; run: hey-agent keys", name)
 }
 
 // Names lists every selectable key, free ones first.

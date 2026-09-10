@@ -22,3 +22,9 @@ func TestIndicatorUsesStateColorAndRestoresTextColor(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionTargetDisambiguatesNumericSessionNames(t *testing.T) {
+	if got, want := sessionTarget("1"), "1:"; got != want {
+		t.Fatalf("tmux session target = %q, want %q", got, want)
+	}
+}

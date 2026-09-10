@@ -17,12 +17,12 @@ jobs:
         include:
           - os: macos-13
             name: darwin-amd64
-            output: hey-claudex_darwin_amd64
+            output: hey-agent_darwin_amd64
             goarch: amd64
             cgo: "1"
           - os: macos-14
             name: darwin-arm64
-            output: hey-claudex_darwin_arm64
+            output: hey-agent_darwin_arm64
             goarch: arm64
             cgo: "1"
     steps:
@@ -31,7 +31,7 @@ jobs:
         with:
           go-version: "1.24.x"
       - run: go test ./...
-      - run: GOARCH=${{ matrix.goarch }} CGO_ENABLED=${{ matrix.cgo }} go build -trimpath -ldflags="-s -w" -o dist/${{ matrix.output }} ./cmd/hey-claudex
+      - run: GOARCH=${{ matrix.goarch }} CGO_ENABLED=${{ matrix.cgo }} go build -trimpath -ldflags="-s -w" -o dist/${{ matrix.output }} ./cmd/hey-agent
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.output }}
@@ -49,7 +49,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum hey-claudex_* > checksums.txt
+          sha256sum hey-agent_* > checksums.txt
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

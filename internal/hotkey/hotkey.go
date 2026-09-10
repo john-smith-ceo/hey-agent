@@ -2,7 +2,13 @@ package hotkey
 
 import "context"
 
-type Event struct{ Down bool }
+// Event is one thing the listener observed. Down is a press of the configured
+// hotkey; Cancel is a press of the cancel key — Escape — and reports that the
+// user wants the current recording dropped rather than transcribed.
+type Event struct {
+	Down   bool
+	Cancel bool
+}
 
 type Listener interface {
 	Start(context.Context) (<-chan Event, error)

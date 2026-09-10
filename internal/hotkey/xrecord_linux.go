@@ -15,6 +15,7 @@ static Display *controlDisplay = NULL;
 static Display *dataDisplay = NULL;
 static XRecordContext recordContext = 0;
 static int targetKeycode = 0;
+static int cancelKeycode = 0;
 
 // XRecord observes the event stream without consuming it, so unlike the macOS
 // tap the key still reaches applications. That is acceptable for a key that
@@ -27,6 +28,8 @@ static void recordCallback(XPointer closure, XRecordInterceptData *data) {
 		if (type == KeyPress || type == KeyRelease) {
 			if (keycode == targetKeycode) {
 				goX11Event(1, type == KeyPress);
+			} else if (keycode == cancelKeycode && type == KeyPress) {
+				goX11Event(2, 1);
 			} else if (type == KeyPress) {
 				goX11Event(0, 1);
 			}
@@ -45,8 +48,9 @@ static int lookupKeycode(unsigned long keysym) {
 
 // startRecord returns 0 on success and a small code identifying the step that
 // failed otherwise, so the Go side can explain the failure precisely.
-static int startRecord(int keycode) {
+static int startRecord(int keycode, int escapeKeycode) {
 	targetKeycode = keycode;
+	cancelKeycode = escapeKeycode;
 	controlDisplay = XOpenDisplay(NULL);
 	dataDisplay = XOpenDisplay(NULL);
 	if (controlDisplay == NULL || dataDisplay == NULL) return 1;
@@ -87,8 +91,9 @@ import (
 )
 
 type x11Record struct {
-	key     Key
-	keycode int
+	key           Key
+	keycode       int
+	cancelKeycode int
 }
 
 func GlobalSupported() bool { return os.Getenv("DISPLAY") != "" }
@@ -96,13 +101,17 @@ func GlobalSupported() bool { return os.Getenv("DISPLAY") != "" }
 // New returns a listener for the configured key.
 func New(key Key) (Listener, error) {
 	if !GlobalSupported() {
-		return nil, errors.New("no X11 display; hey-claudex needs an X11 session (Wayland is not supported yet)")
+		return nil, errors.New("no X11 display; hey-agent needs an X11 session (Wayland is not supported yet)")
 	}
 	keycode := int(C.lookupKeycode(C.ulong(key.x11Keysym)))
 	if keycode <= 0 {
 		return nil, fmt.Errorf("this keyboard layout has no %s key", key.Name)
 	}
-	return &x11Record{key: key, keycode: keycode}, nil
+	escapeKeycode := int(C.lookupKeycode(C.ulong(0xff1b)))
+	if escapeKeycode <= 0 {
+		return nil, errors.New("this keyboard layout has no Escape key")
+	}
+	return &x11Record{key: key, keycode: keycode, cancelKeycode: escapeKeycode}, nil
 }
 
 var (
@@ -111,7 +120,7 @@ var (
 )
 
 func (r *x11Record) Start(ctx context.Context) (<-chan Event, error) {
-	switch code := int(C.startRecord(C.int(r.keycode))); code {
+	switch code := int(C.startRecord(C.int(r.keycode), C.int(r.cancelKeycode))); code {
 	case 0:
 	case 1:
 		return nil, errors.New("cannot open the X display")
@@ -146,7 +155,7 @@ func goX11Event(target C.int, down C.int) {
 		return
 	}
 	select {
-	case events <- raw{target: target != 0, down: down != 0}:
+	case events <- raw{target: target == 1, down: down != 0, cancel: target == 2}:
 	default:
 	}
 }

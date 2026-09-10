@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// While hey-claudex borrows the status line, the session's own state is parked in
+// While hey-agent borrows the status line, the session's own state is parked in
 // two user options. They live in tmux rather than in memory so that the value
 // survives the listener being killed and can still be restored afterwards.
 //
@@ -16,10 +16,10 @@ import (
 // value, an empty one overrides it with nothing. Restoring the wrong one would
 // silently wipe the clock and the pane title.
 const (
-	wasOption  = "@hey-claudex-status-was"
-	baseOption = "@hey-claudex-status-base"
-	lenWas     = "@hey-claudex-length-was"
-	lenBase    = "@hey-claudex-length-base"
+	wasOption  = "@hey-agent-status-was"
+	baseOption = "@hey-agent-status-base"
+	lenWas     = "@hey-agent-length-was"
+	lenBase    = "@hey-agent-length-base"
 )
 
 // borrowedLength is generous on purpose. tmux truncates status-right at
@@ -27,7 +27,7 @@ const (
 // off an appended indicator entirely, which is exactly what happened.
 const borrowedLength = "200"
 
-// Status owns the status line of one tmux session. In a session hey-claudex
+// Status owns the status line of one tmux session. In a session hey-agent
 // created it takes the whole line. In a session that already belonged to the
 // user it only appends its indicator to the existing status-right and puts the
 // original back on the way out: overwriting somebody's own status line is the
@@ -130,14 +130,14 @@ func (s *Status) Set(ctx context.Context, state string) error {
 		if err != nil {
 			return err
 		}
-		message := "#[default]" + indicatorWith(state, "#[default]") + "hey-claudex " + s.label(state)
+		message := "#[default]" + indicatorWith(state, "#[default]") + "hey-agent " + s.label(state)
 		if strings.TrimSpace(base) != "" {
 			message += " #[default]| " + base
 		}
 		return s.set(ctx, "status-right", message)
 	}
 	message := "<speech-to-text " + indicator(state) + s.label(state) + ">"
-	left := "#[fg=#17324D,bold]hey-claudex#[fg=#17324D]: " + s.app
+	left := "#[fg=#17324D,bold]hey-agent#[fg=#17324D]: " + s.app
 	left += " #[fg=#315B82]" + message
 	return s.set(ctx, "status-left", left)
 }
@@ -152,7 +152,7 @@ func (s *Status) Restore(ctx context.Context) error {
 	return err
 }
 
-// Restore is also reachable without a Status, so that `hey-claudex stop` can put
+// Restore is also reachable without a Status, so that `hey-agent stop` can put
 // the line back after killing a listener that had no chance to clean up. It
 // reports whether there was anything to restore, which lets stop tell "cleaned
 // up after a dead listener" from "nothing was running here".
@@ -200,7 +200,7 @@ func Restore(ctx context.Context, session string) (bool, error) {
 // sessionOptionIsSet reports whether the option is set on the session itself
 // rather than inherited from the global value.
 func sessionOptionIsSet(ctx context.Context, session, option string) (bool, error) {
-	output, err := exec.CommandContext(ctx, "tmux", "show-options", "-t", session).Output()
+	output, err := exec.CommandContext(ctx, "tmux", "show-options", "-t", sessionTarget(session)).Output()
 	if err != nil {
 		return false, fmt.Errorf("read tmux options: %w", err)
 	}
@@ -224,7 +224,7 @@ func effective(ctx context.Context, session, option string, sessionSet bool) (st
 }
 
 func unsetOption(ctx context.Context, session, option string) error {
-	output, err := exec.CommandContext(ctx, "tmux", "set-option", "-t", session, "-u", option).CombinedOutput()
+	output, err := exec.CommandContext(ctx, "tmux", "set-option", "-t", sessionTarget(session), "-u", option).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("unset tmux %s: %s", option, strings.TrimSpace(string(output)))
 	}
@@ -273,7 +273,7 @@ func (s *Status) get(ctx context.Context, option string) (string, error) {
 }
 
 func setOption(ctx context.Context, session, option, value string) error {
-	output, err := exec.CommandContext(ctx, "tmux", "set-option", "-t", session, option, value).CombinedOutput()
+	output, err := exec.CommandContext(ctx, "tmux", "set-option", "-t", sessionTarget(session), option, value).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("set tmux %s: %s", option, strings.TrimSpace(string(output)))
 	}
@@ -281,12 +281,17 @@ func setOption(ctx context.Context, session, option, value string) error {
 }
 
 func get(ctx context.Context, session, option string) (string, error) {
-	output, err := exec.CommandContext(ctx, "tmux", "show-option", "-t", session, "-qv", option).Output()
+	output, err := exec.CommandContext(ctx, "tmux", "show-option", "-t", sessionTarget(session), "-qv", option).Output()
 	if err != nil {
 		return "", fmt.Errorf("read tmux %s: %w", option, err)
 	}
 	return strings.TrimRight(string(output), "\n"), nil
 }
+
+// sessionTarget makes numeric session names unambiguous to tmux. A bare
+// "1" is interpreted as window index 1; "1:" explicitly addresses session
+// "1".
+func sessionTarget(session string) string { return session + ":" }
 
 // tmux evaluates # constructs inside status strings. Keep command-line input
 // visible but inert, even if somebody passes unusual Codex arguments.

@@ -1,0 +1,32 @@
+class HeyCodex < Formula
+  desc "Voice input for Codex in tmux"
+  homepage "https://github.com/{{OWNER}}/hey-agent"
+  url "https://github.com/{{OWNER}}/hey-agent/archive/refs/tags/v{{VERSION}}.tar.gz"
+  sha256 "{{SHA256}}"
+  license "MIT"
+
+  depends_on "ffmpeg"
+  depends_on "tmux"
+  depends_on "go" => :build
+
+  def install
+    ENV["CGO_ENABLED"] = "1"
+    system "go", "build", *std_go_args(output: bin/"hey-agent"), "./cmd/hey-agent"
+  end
+
+  def caveats
+    <<~EOS
+      First-time setup:
+        hey-agent setup-key
+        hey-agent listen
+
+      `hey-agent` listens only in the explicitly selected tmux pane.
+      To stop listening: hey-agent stop && brew uninstall hey-agent
+      API credentials stay in the local tools/hey-agent/.env file.
+    EOS
+  end
+
+  test do
+    assert_match "usage:", shell_output("#{bin}/hey-agent help")
+  end
+end

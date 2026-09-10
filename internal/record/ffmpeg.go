@@ -36,7 +36,7 @@ func (r *FFmpeg) Record(ctx context.Context, autoStop bool) (string, error) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return "", errors.New("ffmpeg not found; install it (macOS: brew install ffmpeg, Debian: apt install ffmpeg)")
 	}
-	file, err := os.CreateTemp("", "hey-claudex-*.wav")
+	file, err := os.CreateTemp("", "hey-agent-*.wav")
 	if err != nil {
 		return "", err
 	}
@@ -54,9 +54,10 @@ func (r *FFmpeg) Record(ctx context.Context, autoStop bool) (string, error) {
 	args = append(args, input...)
 	args = append(args, "-ac", "1", "-ar", "16000")
 	if autoStop {
-		// Laptop microphones often have a noise floor above -35 dBFS. -25 dBFS
-		// still distinguishes normal speech while treating room noise as silence.
-		args = append(args, "-af", fmt.Sprintf("silencedetect=noise=-25dB:d=%0.3f", r.silence.Seconds()))
+		// -25 dBFS резал тихую речь вместе с паузами: у этого микрофона голос
+		// проваливается под порог, и запись обрывалась посреди фразы. -35 dBFS
+		// держит раздумье внутри записи, а --silence по-прежнему задаёт паузу.
+		args = append(args, "-af", fmt.Sprintf("silencedetect=noise=-35dB:d=%0.3f", r.silence.Seconds()))
 	}
 	args = append(args, "-c:a", "pcm_s16le", "-y", path)
 	cmd := exec.Command("ffmpeg", args...)

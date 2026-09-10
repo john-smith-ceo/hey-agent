@@ -1,19 +1,16 @@
-.PHONY: build test install uninstall run release-check
+.PHONY: build test install run release-check
 
 build:
-	go build -o bin/hey-claudex ./cmd/hey-claudex
+	go build -o bin/hey-agent ./cmd/hey-agent
 
 test:
 	go test ./...
 
 install: build
-	./bin/hey-claudex install
-
-uninstall:
-	hey-claudex uninstall
+	./bin/hey-agent install
 
 run:
-	hey-claudex
+	hey-agent listen
 
 release-check: test build
 	git diff --check

@@ -1,24 +1,16 @@
-# hey-claudex
+# hey-agent
 
-Voice input for the tmux pane you are already working in. `hey-claudex` records
-speech, sends the audio to the OpenAI Transcription API and pastes the text
+Voice input for an explicitly selected tmux pane. `hey-agent` records
+speech, sends the audio to an OpenAI-compatible transcription API and pastes the text
 into your pane. It starts nothing and launches nothing: your assistant is
 already running, and the transcription goes to it.
 
 macOS and Linux (X11).
 
-## Names
+## Name
 
-The tool answers to three names, all symlinks to one binary:
-
-| Name | Expects | Purpose |
-|---|---|---|
-| `hey-claude` | Claude Code in the pane | refuses if something else is running there |
-| `hey-codex` | Codex in the pane | same check, other assistant |
-| `hey-claudex` | anything | no check at all |
-
-The check exists because a transcription landing in the wrong window is worse
-than one that never arrived. `--any` overrides it.
+The product has one public executable: `hey-agent`. It sends transcription
+only to the explicit `--target` pane or to the current tmux pane.
 
 ## Install
 
@@ -43,8 +35,8 @@ codex plugin add hey-codex@hey-claudex
 
 ```sh
 brew install ffmpeg tmux
-git clone https://github.com/john-smith-ceo/hey-claudex
-cd hey-claudex && go build -o bin/hey-claudex ./cmd/hey-claudex && ./bin/hey-claudex install
+git clone https://github.com/john-smith-ceo/hey-agent
+cd hey-agent && go build -o bin/hey-agent ./cmd/hey-agent && ./bin/hey-agent install
 ```
 
 Grant Microphone and Accessibility permission to the terminal application that
@@ -57,28 +49,45 @@ XRecord, which requires the Xlib headers at build time:
 
 ```sh
 sudo apt install ffmpeg tmux libx11-dev libxtst-dev
-git clone https://github.com/john-smith-ceo/hey-claudex
-cd hey-claudex && go build -o bin/hey-claudex ./cmd/hey-claudex && ./bin/hey-claudex install
+git clone https://github.com/john-smith-ceo/hey-agent
+cd hey-agent && go build -o bin/hey-agent ./cmd/hey-agent && ./bin/hey-agent install
 ```
 
-`install` links all three names into `~/.local/bin`.
+`install` links `hey-agent` into `~/.local/bin`.
 
 ### First run
 
 ```sh
-hey-claudex setup-api-key      # macOS Keychain, or ~/.config/hey-claudex on Linux
-hey-claudex doctor             # ffmpeg, tmux, hotkey, key
+hey-agent setup-key            # store the provider API key in tools/hey-agent/.env
+hey-agent doctor               # ffmpeg, tmux, hotkey, provider config
 ```
 
-`setup-api-key --env-file /path/to/.env` reads `OPENAI_API_KEY` or
+`setup-key --env-file /path/to/.env` reads `OPENAI_API_KEY` or
 `OPEN_AI_API_KEY` from a dotenv file instead of prompting.
+
+## Provider
+
+The provider uses one OpenAI-compatible HTTP contract. Configuration is read
+when `listen` starts:
+
+```sh
+export HEY_AGENT_BASE_URL=https://api.openai.com/v1
+export HEY_AGENT_MODEL=gpt-transcribe
+export HEY_AGENT_API_KEY=...
+```
+
+The canonical local secret file is `tools/hey-agent/.env` with mode `600`;
+`HEY_AGENT_ENV_FILE` can override its path. `HEY_AGENT_BASE_URL` and
+`HEY_AGENT_MODEL` are optional and default to the
+OpenAI-compatible endpoint and `gpt-transcribe`. The request timeout is 60
+seconds. API key values are never printed.
 
 ## Use
 
 From the pane where your assistant runs:
 
 ```sh
-hey-claude
+hey-agent listen
 ```
 
 Press Right Alt (Right Option on macOS), speak, then press it again — or simply
@@ -86,13 +95,21 @@ pause. The text appears in the input line and **is not submitted**: you read it
 and press Enter yourself.
 
 ```sh
-hey-claude --submit              # send it as soon as the recording ends
-hey-claude --mode push           # record only while the key is held
-hey-claude --key Shift_L         # a different key
-hey-claude --silence 2s          # a shorter pause ends the recording sooner
-hey-claudex stop                 # stop listening
-hey-claudex keys                 # every selectable key
+hey-agent listen --submit        # send it as soon as the recording ends
+hey-agent listen --mode push     # record only while the key is held
+hey-agent listen --key Shift_L   # a different key
+hey-agent listen --silence 2s   # a shorter pause ends the recording sooner
+hey-agent stop                   # stop listening
+hey-agent keys                   # every selectable key
+hey-agent config --mode push --silence 2s --submit
+                                # change settings for the next recording
+hey-agent config --no-submit    # return to manual review
 ```
+
+Runtime settings can be changed while the listener is running. They are
+applied only after the current recording has finished, never in the middle of
+recording. The command must be run from the tmux session whose listener is
+being configured.
 
 `--submit` is deliberately independent of `--mode`: how a recording starts and
 what happens to its result are separate questions, and holding a key, releasing
@@ -130,7 +147,7 @@ is a key that has none.
 State is shown at the bottom of the terminal: `mode:tap`, `rec…`,
 `transcribe…`, `done`, `error`, and `mode:tap auto` when submission is on.
 
-In a session you already had, `hey-claudex` only appends its indicator to
+In a session you already had, `hey-agent` only appends its indicator to
 `status-right` and parks the previous value, restoring it when it stops. Your
 theme stays yours. It also raises `status-right-length`, which defaults to 40
 characters — short enough to cut the indicator off entirely.
@@ -144,13 +161,13 @@ If something reads answers out loud, it ends up inside the recording. Two flags
 prevent that:
 
 ```sh
-hey-claude --busy-file ~/.config/jarvis-voice/mic-busy \
-           --on-record "jarvis-voice hush"
+hey-agent listen --busy-file ~/.config/jarvis-voice/mic-busy \
+                 --on-record "jarvis-voice hush"
 ```
 
 The file says "microphone busy" to anything that watches it; the command
 interrupts what is already speaking, which a file cannot do. Both also come
-from `HEY_CLAUDEX_BUSY_FILE` and `HEY_CLAUDEX_ON_RECORD`.
+from `HEY_AGENT_BUSY_FILE` and `HEY_AGENT_ON_RECORD`.
 
 ## Privacy and safety
 
@@ -160,13 +177,13 @@ from `HEY_CLAUDEX_BUSY_FILE` and `HEY_CLAUDEX_ON_RECORD`.
   focus control, no synthetic keystrokes beyond the optional Enter.
 - Without `--submit`, nothing is ever submitted for you.
 - An empty transcription is never sent.
-- `stop` removes only what `hey-claudex` started. It never kills your session.
+- `stop` removes only what `hey-agent` started. It never kills your session.
 
 ## Development
 
 ```sh
 go test ./...
-go build ./cmd/hey-claudex
+go build ./cmd/hey-agent
 ```
 
 ## License

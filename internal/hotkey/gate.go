@@ -5,11 +5,14 @@ import (
 	"time"
 )
 
-// raw is one keyboard event as the platform listener sees it. Only two facts
-// matter: whether it belongs to the configured key, and whether it is a press.
+// raw is one keyboard event as the platform listener sees it. Only three facts
+// matter: whether it belongs to the configured key, whether it is a press, and
+// whether it is the cancel key — Escape, which aborts the recording instead of
+// finishing it.
 type raw struct {
 	target bool
 	down   bool
+	cancel bool
 }
 
 // SoloTimeout bounds how long a typing modifier may stay down and still count
@@ -37,6 +40,10 @@ func gate(ctx context.Context, in <-chan raw, key Key, timeout time.Duration) <-
 			case event, ok := <-in:
 				if !ok {
 					return
+				}
+				if event.cancel {
+					emit(ctx, out, Event{Cancel: true})
+					continue
 				}
 				if key.Category == Free {
 					if event.target {
