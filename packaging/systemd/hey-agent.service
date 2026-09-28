@@ -1,0 +1,31 @@
+# hey-agent unified voice daemon — systemd user unit (template).
+#
+# Install (cutover only, see SPEC-HEY-AGENT.md §8):
+#   mkdir -p ~/.config/systemd/user
+#   cp packaging/systemd/hey-agent.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now hey-agent.service
+#
+# The unit runs the foreground daemon; `hey-agent status|bind|speak|hush|stop`
+# talk to it over $XDG_RUNTIME_DIR/hey-agent.sock.
+
+[Unit]
+Description=hey-agent voice daemon (hotkey input + TTS output for tmux)
+# Audio stack should be up before we claim the microphone via ffmpeg, and a
+# graphical/X11 session must exist for the global hotkey listener (XRecord).
+After=pipewire.service pulseaudio.service graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+# Keys come from the canonical env file; absent file is fine for STT-less
+# runs (e.g. voice output only), hence the "-" prefix.
+EnvironmentFile=-%h/Tools/linux/hey-agent/.env
+ExecStart=%h/.local/bin/hey-agent daemon --submit --busy-file %h/.config/jarvis-voice/mic-busy
+Restart=on-failure
+RestartSec=2
+# Keep us polite next to the real-time audio stack.
+Nice=5
+
+[Install]
+WantedBy=default.target

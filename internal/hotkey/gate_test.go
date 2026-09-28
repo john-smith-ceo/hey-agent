@@ -94,3 +94,83 @@ func TestGateEscapeEmitsCancelWithoutHotkeyEvent(t *testing.T) {
 		t.Fatalf("expected one cancel event, got %+v", got)
 	}
 }
+
+// repeatBurst replays what X11 autorepeat produces for a held key: a Release
+// immediately followed by a Press, over and over, at the repeat period.
+func repeatBurst(in chan<- raw, pairs int) {
+	for i := 0; i < pairs; i++ {
+		in <- raw{target: true, down: false}
+		in <- raw{target: true, down: true}
+		time.Sleep(30 * time.Millisecond)
+	}
+	in <- raw{target: true, down: false}
+}
+
+func TestGateFreeKeySwallowsAutorepeat(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	in := make(chan raw, 16)
+	out := gate(ctx, in, Key{Name: "Alt_R", Category: Free}, SoloTimeout)
+	in <- raw{target: true, down: true}
+	go repeatBurst(in, 3)
+	got := drain(t, out, 2)
+	if len(got) != 2 || !got[0].Down || got[1].Down {
+		t.Fatalf("autorepeat must collapse to one press and one release, got %+v", got)
+	}
+}
+
+func TestGateTypingKeySwallowsAutorepeat(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	in := make(chan raw, 16)
+	out := gate(ctx, in, Key{Name: "Shift_L", Category: Typing}, SoloTimeout)
+	in <- raw{target: true, down: true}
+	repeatBurst(in, 2)
+	got := drain(t, out, 1)
+	if len(got) != 1 || !got[0].Down {
+		t.Fatalf("a held-but-repeating solo press must report once, got %+v", got)
+	}
+}
+
+func TestGateTypingKeyAutorepeatHoldIsNotSolo(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	in := make(chan raw, 16)
+	out := gate(ctx, in, Key{Name: "Shift_L", Category: Typing}, 60*time.Millisecond)
+	in <- raw{target: true, down: true}
+	// Hold well past the solo timeout; every repeat pair keeps the hold alive.
+	repeatBurst(in, 3)
+	if got := drain(t, out, 1); len(got) != 0 {
+		t.Fatalf("a long hold with autorepeat must not trigger, got %+v", got)
+	}
+}
+
+func TestGateDistinctTapsStillCount(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	in := make(chan raw, 16)
+	out := gate(ctx, in, Key{Name: "Shift_L", Category: Typing}, SoloTimeout)
+	in <- raw{target: true, down: true}
+	in <- raw{target: true, down: false}
+	time.Sleep(150 * time.Millisecond) // human re-press gap, past RepeatGap
+	in <- raw{target: true, down: true}
+	in <- raw{target: true, down: false}
+	got := drain(t, out, 2)
+	if len(got) != 2 || !got[0].Down || !got[1].Down {
+		t.Fatalf("two deliberate taps must report two presses, got %+v", got)
+	}
+}
+
+func TestGateKeyAfterReleaseFlushesPress(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	in := make(chan raw, 16)
+	out := gate(ctx, in, Key{Name: "Shift_L", Category: Typing}, SoloTimeout)
+	in <- raw{target: true, down: true}
+	in <- raw{target: true, down: false}
+	in <- raw{down: true} // a letter right after releasing the modifier
+	got := drain(t, out, 1)
+	if len(got) != 1 || !got[0].Down {
+		t.Fatalf("release followed by typing still counts as a solo press, got %+v", got)
+	}
+}

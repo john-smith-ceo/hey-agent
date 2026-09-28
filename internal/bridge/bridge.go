@@ -57,6 +57,24 @@ type Config struct {
 	SubmitDelay time.Duration
 	// RuntimeConfig is an atomically-written JSON file reloaded between recordings.
 	RuntimeConfig string
+
+	// Listener, when set, replaces the platform hotkey listener built from
+	// Key. The daemon injects its bind/unbind gate here so the grab can be
+	// released without rebuilding the pipeline; nil means hotkey.New as before.
+	Listener hotkey.Listener
+	// OnEvent runs synchronously before each hotkey event is handled. The
+	// daemon uses it to hush voice output before a recording starts; nil means
+	// no hook.
+	OnEvent func(hotkey.Event)
+	// StateSeq, when set, receives the same state strings as State but tagged
+	// with the recording session that produced them. A consumer (the daemon
+	// FSM) can then drop news from an abandoned session: a previous
+	// recording's late "pasted" must not mark a newer recording idle.
+	StateSeq func(seq uint64, state string)
+
+	// Sender replaces the fixed tmux sender when set — the daemon hands over
+	// the resolver-backed sender here. nil → TmuxTarget is used.
+	Sender Sender
 }
 
 type Bridge struct {
@@ -64,7 +82,7 @@ type Bridge struct {
 	hotkey     hotkey.Listener
 	recorder   record.Recorder
 	transcribe transcribe.Client
-	sender     sender
+	sender     Sender
 
 	settingsMu sync.RWMutex
 	mode       Mode
@@ -73,13 +91,29 @@ type Bridge struct {
 
 	mu        sync.Mutex
 	recording bool
-	cancel    context.CancelFunc
-	session   uint64
+	// inflight stays set until a finished recording has been transcribed and
+	// delivered. Recording is already false by then, so without this flag a
+	// quick second press could start a new recording while the previous
+	// transcription is still being pasted — two overlapping sessions then
+	// deliver into the pane, which reads as duplicated text.
+	inflight bool
+	cancel   context.CancelFunc
+	session  uint64
 }
 
-type sender interface {
+// Sender is the delivery port: one resolved tmux pane per Send. Exported so
+// the daemon can inject the resolver-backed sender (internal/target) which
+// re-checks the pane before every delivery (SPEC §3 fail-closed).
+type Sender interface {
 	Send(context.Context, string, bool) error
 	Target() string
+}
+
+// sessionStarter is an optional sender capability: BeginRecording runs before
+// the microphone opens, so a fail-closed resolver error stops the recording
+// instead of discovering "nowhere to paste" after the user already spoke.
+type sessionStarter interface {
+	BeginRecording(context.Context) error
 }
 
 func New(config Config) (*Bridge, error) {
@@ -95,19 +129,27 @@ func New(config Config) (*Bridge, error) {
 	if config.Mode == Push && !config.Key.SupportsPush() {
 		return nil, fmt.Errorf("%s is used while typing, so hold-to-talk cannot be told apart from ordinary use; run it with --mode tap", config.Key.Name)
 	}
-	listener, err := hotkey.New(config.Key)
-	if err != nil {
-		return nil, err
+	listener := config.Listener
+	if listener == nil {
+		platformListener, err := hotkey.New(config.Key)
+		if err != nil {
+			return nil, err
+		}
+		listener = platformListener
 	}
-	sender, err := tmux.New(config.TmuxTarget)
-	if err != nil {
-		return nil, err
-	}
-	if config.SubmitDelay > 0 {
-		sender.SubmitDelay = config.SubmitDelay
-	}
-	if err := sender.Check(context.Background()); err != nil {
-		return nil, err
+	sender := config.Sender
+	if sender == nil {
+		fixed, err := tmux.New(config.TmuxTarget)
+		if err != nil {
+			return nil, err
+		}
+		if config.SubmitDelay > 0 {
+			fixed.SubmitDelay = config.SubmitDelay
+		}
+		if err := fixed.Check(context.Background()); err != nil {
+			return nil, err
+		}
+		sender = fixed
 	}
 	return &Bridge{
 		config:   config,
@@ -150,6 +192,11 @@ func (b *Bridge) Run(parent context.Context) error {
 }
 
 func (b *Bridge) handle(event hotkey.Event) {
+	// The daemon's hook goes first: a press that hushes speech must run before
+	// start() opens the microphone, or the dying phrase lands in the recording.
+	if b.config.OnEvent != nil {
+		b.config.OnEvent(event)
+	}
 	// Escape — отмена: запись гаснет без транскрибации, независимо от режима.
 	if event.Cancel {
 		b.stop(false)
@@ -179,18 +226,36 @@ func (b *Bridge) handle(event hotkey.Event) {
 func (b *Bridge) start(autoStop bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.recording {
+	if b.recording || b.inflight {
 		return
+	}
+	// Fail-closed resolve BEFORE the microphone opens: when the target cannot
+	// be determined the press is dropped with a visible error — recording
+	// speech first and discovering "nowhere to paste" afterwards is worse.
+	if starter, ok := b.sender.(sessionStarter); ok {
+		if err := starter.BeginRecording(context.Background()); err != nil {
+			// This press never became a recording, but it still gets its own
+			// seq: tagging the error with the previous session would let a
+			// seq-aware consumer drop it as stale.
+			b.session++
+			b.fail(b.session, "no recording target:", err)
+			return
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	recorder, submit := b.currentRecordingSettings()
 	b.session++
 	session := b.session
-	b.recording, b.cancel = true, cancel
+	b.recording, b.inflight, b.cancel = true, true, cancel
 	fmt.Fprintln(b.config.Log, "recording started")
-	b.state("recording")
+	b.stateFor(session, "recording")
 	b.markBusy()
 	go func() {
+		defer func() {
+			b.mu.Lock()
+			b.inflight = false
+			b.mu.Unlock()
+		}()
 		startedAt := time.Now()
 		file, err := recorder.Record(ctx, autoStop)
 		recorded := time.Since(startedAt)
@@ -203,27 +268,28 @@ func (b *Bridge) start(autoStop bool) {
 		b.mu.Unlock()
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
-				b.fail("recording failed:", err)
+				b.fail(session, "recording failed:", err)
 			}
 			return
 		}
 		defer os.Remove(file)
 		if discard {
-			b.state("idle")
+			b.stateFor(session, "idle")
 			return
 		}
 		fmt.Fprintln(b.config.Log, "transcribing")
-		b.state("transcribing")
+		b.stateFor(session, "transcribing")
 		transcribeStart := time.Now()
 		text, err := b.transcribe.Transcribe(context.Background(), file)
 		transcribed := time.Since(transcribeStart)
 		if err != nil {
-			b.fail("transcription failed:", err)
+			b.fail(session, "transcription failed:", err)
 			return
 		}
+		b.stateFor(session, "delivering")
 		deliverStart := time.Now()
 		if err := b.sender.Send(context.Background(), text, submit); err != nil {
-			b.fail("tmux delivery failed:", err)
+			b.fail(session, "tmux delivery failed:", err)
 			return
 		}
 		delivered := time.Since(deliverStart)
@@ -236,8 +302,8 @@ func (b *Bridge) start(autoStop bool) {
 		} else {
 			fmt.Fprintf(b.config.Log, "transcription delivered to tmux %s; review it and press Enter yourself\n", b.sender.Target())
 		}
-		b.state("pasted")
-		time.AfterFunc(1500*time.Millisecond, func() { b.state("idle") })
+		b.stateFor(session, "pasted")
+		time.AfterFunc(1500*time.Millisecond, func() { b.stateFor(session, "idle") })
 	}()
 }
 
@@ -325,10 +391,10 @@ func (b *Bridge) stop(transcribe bool) {
 
 // fail reports a failure and then lets the indicator settle back to idle. A
 // status line borrowed from the user must not keep a red dot forever.
-func (b *Bridge) fail(message string, err error) {
+func (b *Bridge) fail(session uint64, message string, err error) {
 	fmt.Fprintln(b.config.Log, message, err)
-	b.state("error")
-	time.AfterFunc(4*time.Second, func() { b.state("idle") })
+	b.stateFor(session, "error")
+	time.AfterFunc(4*time.Second, func() { b.stateFor(session, "idle") })
 }
 
 // markBusy raises the microphone flag and hushes anything already speaking.
@@ -368,3 +434,17 @@ func (b *Bridge) state(value string) {
 		b.config.State(value)
 	}
 }
+
+// stateFor reports a state that belongs to one recording session. States that
+// are commands rather than pipeline output — the "idle"/"transcribing" emitted
+// by stop() — stay untagged: they apply whichever session is current.
+func (b *Bridge) stateFor(seq uint64, value string) {
+	if b.config.StateSeq != nil {
+		b.config.StateSeq(seq, value)
+	}
+	b.state(value)
+}
+
+// Target reports the pane this bridge delivers to; the daemon answers
+// `status` with it.
+func (b *Bridge) Target() string { return b.sender.Target() }

@@ -142,6 +142,57 @@ original Right Option tap worked. On Linux XRecord observes the stream without
 consuming it, so the key keeps its normal function — which is why the default
 is a key that has none.
 
+## Daemon mode
+
+`hey-agent daemon` runs the same input pipeline as a foreground service —
+the shape a systemd user unit (`hey-agent.service`, see JOH-348) or a manual
+launch uses:
+
+```sh
+hey-agent daemon
+```
+
+With no `--target` the daemon follows the **attached tmux client**: every
+recording resolves the pane the user is actually looking at (the client with
+the latest `client_activity`), and re-verifies that pane right before the
+text is pasted. If the pane closed, the client detached, or the target moved
+mid-recording, the transcript is dropped rather than pasted into the wrong
+place — fail closed. `--target %7` pins a fixed pane for debugging;
+`--tmux-socket name` points the whole daemon at a different tmux server
+(`tmux -L name`).
+
+A Linux tray icon (StatusNotifierItem over D-Bus, no GTK) mirrors the state
+machine and offers bind/unbind, submit and voice-output checkboxes, hush and
+quit. Without a tray host the daemon runs headless — `--no-tray` asks for
+that explicitly.
+
+The daemon owns a unix socket: `$XDG_RUNTIME_DIR/hey-agent.sock`
+(fallback `/tmp/hey-agent-$UID.sock`; `HEY_AGENT_SOCKET` overrides). The file
+is `0600`, the protocol is one JSON line per request and per reply, and every
+command answers within two seconds or fails. Every daemon client command —
+`daemon`, `status`, `bind`, `unbind`, `speak`, `hush`, `stop` — also accepts
+`--socket` to point at a non-default path. The CLI commands are thin
+clients of that socket:
+
+| Command | Purpose |
+|---|---|
+| `hey-agent status` | state, hotkey bound, target pane, uptime, version |
+| `hey-agent bind` / `unbind` | grab / release the hotkey without stopping the daemon |
+| `echo text \| hey-agent speak` | speak text aloud; `speak -t "…"`, `--voice`, `--instructions`, `--speed-up`, `--normal-speed` are the `agent-voice-over send` fields |
+| `hey-agent hush` | cut the playing phrase off |
+| `hey-agent config --submit --silence 2s` | change runtime settings through the socket |
+| `hey-agent stop` | graceful shutdown (falls back to the legacy listener when no daemon runs) |
+
+The state machine is `idle → recording → transcribing → delivering → idle`,
+plus a `speaking` lane that is mutually exclusive with recording: `speak`
+during a recording waits in a one-deep queue (a newer `speak` replaces the
+waiting one), and pressing the hotkey while speaking hushes the phrase and
+starts recording. A `--busy-file` marker delays `speak` while it is fresh and
+is discarded as abandoned once it is older than 300 s.
+
+`hey-agent run --attached` and `hey-agent listen` keep working unchanged —
+the daemon is additive, not a replacement yet.
+
 ## Status line
 
 State is shown at the bottom of the terminal: `mode:tap`, `rec…`,

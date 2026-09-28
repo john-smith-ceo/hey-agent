@@ -22,6 +22,11 @@ const DefaultSubmitDelay = 250 * time.Millisecond
 type Sender struct {
 	target string
 
+	// Socket names an alternate tmux server for `tmux -L name`. Empty talks
+	// to the default server — the JOH-354 stand runs its own server, and
+	// pasting must not leak onto the user's real one.
+	Socket string
+
 	// SubmitDelay is exported so that a slow TUI can be given more room
 	// without rebuilding.
 	SubmitDelay time.Duration
@@ -39,8 +44,20 @@ func New(target string) (*Sender, error) {
 
 func (s *Sender) Target() string { return s.target }
 
+// argv prepends the socket flag when the sender talks to a named server.
+func (s *Sender) argv(args ...string) []string {
+	if s.Socket != "" {
+		return append([]string{"-L", s.Socket}, args...)
+	}
+	return args
+}
+
+func (s *Sender) tmux(ctx context.Context, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, "tmux", s.argv(args...)...)
+}
+
 func (s *Sender) Check(ctx context.Context) error {
-	output, err := exec.CommandContext(ctx, "tmux", "display-message", "-p", "-t", s.target, "#{pane_id}").CombinedOutput()
+	output, err := s.tmux(ctx, "display-message", "-p", "-t", s.target, "#{pane_id}").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tmux target %q is unavailable: %s", s.target, strings.TrimSpace(string(output)))
 	}
@@ -55,12 +72,12 @@ func (s *Sender) Send(ctx context.Context, text string, submit bool) error {
 	if err != nil {
 		return err
 	}
-	load := exec.CommandContext(ctx, "tmux", "load-buffer", "-b", buffer, "-")
+	load := s.tmux(ctx, "load-buffer", "-b", buffer, "-")
 	load.Stdin = strings.NewReader(text)
 	if output, err := load.CombinedOutput(); err != nil {
 		return fmt.Errorf("load tmux buffer: %s", strings.TrimSpace(string(output)))
 	}
-	paste := exec.CommandContext(ctx, "tmux", "paste-buffer", "-d", "-b", buffer, "-t", s.target)
+	paste := s.tmux(ctx, "paste-buffer", "-d", "-b", buffer, "-t", s.target)
 	if output, err := paste.CombinedOutput(); err != nil {
 		return fmt.Errorf("paste into tmux target %q: %s", s.target, strings.TrimSpace(string(output)))
 	}
@@ -76,7 +93,7 @@ func (s *Sender) Send(ctx context.Context, text string, submit bool) error {
 		case <-timer.C:
 		}
 	}
-	enter := exec.CommandContext(ctx, "tmux", "send-keys", "-t", s.target, "Enter")
+	enter := s.tmux(ctx, "send-keys", "-t", s.target, "Enter")
 	if output, err := enter.CombinedOutput(); err != nil {
 		return fmt.Errorf("submit in tmux target %q: %s", s.target, strings.TrimSpace(string(output)))
 	}
