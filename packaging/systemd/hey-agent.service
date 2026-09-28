@@ -21,6 +21,10 @@ Type=simple
 # Keys come from the canonical env file; absent file is fine for STT-less
 # runs (e.g. voice output only), hence the "-" prefix.
 EnvironmentFile=-%h/Tools/linux/hey-agent/.env
+# HEY_AGENT_ENV_FILE tells the daemon which file holds the keys so the tray
+# "Set API key…" dialog writes where EnvironmentFile reads — the two paths
+# must agree or a saved key never reaches the process.
+Environment=HEY_AGENT_ENV_FILE=%h/Tools/linux/hey-agent/.env
 ExecStart=%h/.local/bin/hey-agent daemon --submit --busy-file %h/.config/jarvis-voice/mic-busy
 Restart=on-failure
 RestartSec=2

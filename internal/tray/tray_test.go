@@ -353,8 +353,8 @@ func TestGetLayout_ReturnsMenu(t *testing.T) {
 	if layout.Properties["children-display"].Value() != "submenu" {
 		t.Error("root must carry children-display=submenu")
 	}
-	if len(layout.Children) != 8 {
-		t.Fatalf("root has %d children, want 8", len(layout.Children))
+	if len(layout.Children) != 12 {
+		t.Fatalf("root has %d children, want 12", len(layout.Children))
 	}
 	// Depth 0 asks for the node only.
 	_, shallow, _ := tr.menuSrv.GetLayout(rootID, 0, nil)

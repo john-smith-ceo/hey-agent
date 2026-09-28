@@ -20,8 +20,10 @@ import (
 
 	"github.com/john-smith-ceo/hey-agent/internal/bridge"
 	"github.com/john-smith-ceo/hey-agent/internal/daemon"
+	"github.com/john-smith-ceo/hey-agent/internal/envfile"
 	"github.com/john-smith-ceo/hey-agent/internal/hotkey"
 	"github.com/john-smith-ceo/hey-agent/internal/record"
+	"github.com/john-smith-ceo/hey-agent/internal/setupui"
 	"github.com/john-smith-ceo/hey-agent/internal/target"
 	"github.com/john-smith-ceo/hey-agent/internal/tmux"
 	"github.com/john-smith-ceo/hey-agent/internal/transcribe"
@@ -1057,7 +1059,11 @@ func runDaemon(args []string) int {
 	watchDone := make(chan struct{})
 	var tr *tray.Tray
 	if !*noTray {
-		if built, err := newDaemonTray(d); err != nil {
+		sockPath := *socket
+		if sockPath == "" {
+			sockPath = daemon.DefaultSocketPath()
+		}
+		if built, err := newDaemonTray(d, agentEnvFile(), sockPath); err != nil {
 			fmt.Fprintf(os.Stderr, "tray unavailable (headless mode): %v\n", err)
 		} else {
 			tr = built
@@ -1104,8 +1110,18 @@ func (a speakerAdapter) Speak(ctx context.Context, req daemon.SpeakRequest) erro
 }
 
 // newDaemonTray builds the tray wired to the daemon's own command handlers,
-// so a menu click goes through exactly the path a socket client would.
-func newDaemonTray(d *daemon.Daemon) (*tray.Tray, error) {
+// so a menu click goes through exactly the path a socket client would. The
+// settings items open zenity dialogs via setupui; envPath must be the file
+// the supervisor loads, otherwise a saved key never reaches the process.
+func newDaemonTray(d *daemon.Daemon, envPath, socketPath string) (*tray.Tray, error) {
+	ui := &setupui.UI{EnvPath: envPath}
+	if os.Getenv("INVOCATION_ID") != "" {
+		// Under systemd the cheapest correct reload is a restart of the unit:
+		// the env file is re-read wholesale, no partial state swap.
+		ui.Restart = func() error {
+			return exec.Command("systemctl", "--user", "restart", "hey-agent.service").Run()
+		}
+	}
 	return tray.New(tray.Config{
 		Actions: tray.Actions{
 			ToggleBind: func() {
@@ -1115,13 +1131,43 @@ func newDaemonTray(d *daemon.Daemon) (*tray.Tray, error) {
 				}
 				d.Handle(daemon.Request{Cmd: cmd})
 			},
-			ToggleSubmit: func() { toggleConfig(d, "submit") },
-			ToggleVoice:  func() { toggleConfig(d, "voice_enabled") },
-			Hush:         func() { d.Handle(daemon.Request{Cmd: "hush"}) },
-			Quit:         func() { d.Handle(daemon.Request{Cmd: "stop"}) },
+			ToggleSubmit:  func() { toggleConfig(d, "submit") },
+			ToggleVoice:   func() { toggleConfig(d, "voice_enabled") },
+			SetAPIKey:     func() { ui.SetAPIKey(context.Background()) },
+			VoiceSettings: func() { ui.VoiceSettings(context.Background()) },
+			About:         func() { ui.About(context.Background(), aboutText(d, envPath, socketPath)) },
+			Hush:          func() { d.Handle(daemon.Request{Cmd: "hush"}) },
+			Quit:          func() { d.Handle(daemon.Request{Cmd: "stop"}) },
 		},
 		Log: os.Stderr,
 	})
+}
+
+// aboutText renders the About dialog: the same facts `hey-agent status`
+// reports, plus where the env file lives and which helpers are reachable —
+// the answers a fresh user asks first.
+func aboutText(d *daemon.Daemon, envPath, socketPath string) string {
+	resp := d.Handle(daemon.Request{Cmd: "status"})
+	var b strings.Builder
+	fmt.Fprintf(&b, "hey-agent %s\n\nСостояние: %v · привязка: %v\nЦель: %v\nСокет: %s\n",
+		version, resp["state"], resp["bound"], resp["target"], socketPath)
+	if _, err := envfile.Load(envPath); err == nil {
+		fmt.Fprintf(&b, "Env-файл: %s", envPath)
+		if m, _ := envfile.Load(envPath); m["HEY_AGENT_API_KEY"] != "" {
+			b.WriteString(" (ключ есть)")
+		} else {
+			b.WriteString(" (ключа нет)")
+		}
+		b.WriteString("\n")
+	}
+	var tools []string
+	for _, name := range []string{"tmux", "ffmpeg", "ffplay", "mpv", "zenity"} {
+		if _, err := exec.LookPath(name); err == nil {
+			tools = append(tools, name)
+		}
+	}
+	fmt.Fprintf(&b, "Найдено: %s", strings.Join(tools, ", "))
+	return b.String()
 }
 
 // toggleConfig flips one boolean in the daemon's runtime config — the status

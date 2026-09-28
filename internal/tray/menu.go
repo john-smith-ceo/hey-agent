@@ -9,14 +9,18 @@ import (
 // Menu item IDs. dbusmenu address items by a caller-chosen integer id —
 // fixed ids keep the Event→action dispatch a plain lookup.
 const (
-	itemStatusID int32 = 1
-	itemSepTopID int32 = 2
-	itemBindID   int32 = 3
-	itemSubmitID int32 = 4
-	itemVoiceID  int32 = 5
-	itemSepBotID int32 = 6
-	itemHushID   int32 = 7
-	itemQuitID   int32 = 8
+	itemStatusID   int32 = 1
+	itemSepTopID   int32 = 2
+	itemBindID     int32 = 3
+	itemSubmitID   int32 = 4
+	itemVoiceID    int32 = 5
+	itemSepMidID   int32 = 9
+	itemAPIKeyID   int32 = 10
+	itemVoiceSetID int32 = 11
+	itemAboutID    int32 = 12
+	itemSepBotID   int32 = 6
+	itemHushID     int32 = 7
+	itemQuitID     int32 = 8
 
 	rootID int32 = 0 // the invisible root node every layout hangs off
 )
@@ -24,12 +28,15 @@ const (
 // action names — MenuItem.action strings resolved to Config.Actions funcs
 // on click.
 const (
-	actNone   = ""
-	actBind   = "bind"
-	actSubmit = "submit"
-	actVoice  = "voice"
-	actHush   = "hush"
-	actQuit   = "quit"
+	actNone    = ""
+	actBind    = "bind"
+	actSubmit  = "submit"
+	actVoice   = "voice"
+	actAPIKey  = "apikey"
+	actVoiceUI = "voicesettings"
+	actAbout   = "about"
+	actHush    = "hush"
+	actQuit    = "quit"
 )
 
 // MenuItem is one row of the tray menu in plain-data form. MenuModel builds
@@ -59,6 +66,10 @@ type MenuItem struct {
 //	✓ Submit automatically       checkmark
 //	✓ Voice output               checkmark
 //	───────────────
+//	Set API key…                 opens a zenity dialog (… = opens a window)
+//	Voice settings…
+//	About hey-agent…
+//	───────────────
 //	Hush
 //	Quit hey-agent
 func MenuModel(bound, submit, voiceOn bool, state State) []MenuItem {
@@ -83,6 +94,10 @@ func menuModel(title string, bound, submit, voiceOn bool, state State) []MenuIte
 			ToggleType: "checkmark", ToggleState: toggleState(submit), action: actSubmit},
 		{ID: itemVoiceID, Type: "standard", Label: "Voice output", Enabled: true,
 			ToggleType: "checkmark", ToggleState: toggleState(voiceOn), action: actVoice},
+		{ID: itemSepMidID, Type: "separator"},
+		{ID: itemAPIKeyID, Type: "standard", Label: "Set API key…", Enabled: true, action: actAPIKey},
+		{ID: itemVoiceSetID, Type: "standard", Label: "Voice settings…", Enabled: true, action: actVoiceUI},
+		{ID: itemAboutID, Type: "standard", Label: "About " + title + "…", Enabled: true, action: actAbout},
 		{ID: itemSepBotID, Type: "separator"},
 		{ID: itemHushID, Type: "standard", Label: "Hush", Enabled: true, action: actHush},
 		{ID: itemQuitID, Type: "standard", Label: "Quit " + title, Enabled: true, action: actQuit},

@@ -1,6 +1,7 @@
 package tray
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/godbus/dbus/v5"
@@ -10,10 +11,11 @@ import (
 // checkmarks, separator, hush, quit — in exactly that order.
 func TestMenuModel_Shape(t *testing.T) {
 	items := MenuModel(false, false, false, StateIdle)
-	if len(items) != 8 {
-		t.Fatalf("MenuModel returned %d items, want 8", len(items))
+	if len(items) != 12 {
+		t.Fatalf("MenuModel returned %d items, want 12", len(items))
 	}
-	wantIDs := []int32{itemStatusID, itemSepTopID, itemBindID, itemSubmitID, itemVoiceID, itemSepBotID, itemHushID, itemQuitID}
+	wantIDs := []int32{itemStatusID, itemSepTopID, itemBindID, itemSubmitID, itemVoiceID,
+		itemSepMidID, itemAPIKeyID, itemVoiceSetID, itemAboutID, itemSepBotID, itemHushID, itemQuitID}
 	for i, id := range wantIDs {
 		if items[i].ID != id {
 			t.Errorf("item %d: ID %d, want %d", i, items[i].ID, id)
@@ -25,11 +27,19 @@ func TestMenuModel_Shape(t *testing.T) {
 	if items[0].Enabled {
 		t.Error("status header must be disabled — it is a label, not a button")
 	}
-	if items[1].Type != "separator" || items[5].Type != "separator" {
-		t.Error("items 2 and 6 must be separators")
+	for _, i := range []int{1, 5, 9} {
+		if items[i].Type != "separator" {
+			t.Errorf("item %d must be a separator", i)
+		}
 	}
-	if items[7].Label != "Quit hey-agent" || items[7].action != actQuit {
-		t.Errorf("last item = %+v, want Quit hey-agent", items[7])
+	last := items[len(items)-1]
+	if last.Label != "Quit hey-agent" || last.action != actQuit {
+		t.Errorf("last item = %+v, want Quit hey-agent", last)
+	}
+	for _, i := range []int{6, 7, 8} {
+		if !strings.HasSuffix(items[i].Label, "…") {
+			t.Errorf("dialog item %d label %q must end with …", i, items[i].Label)
+		}
 	}
 }
 

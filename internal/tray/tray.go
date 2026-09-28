@@ -106,11 +106,14 @@ type Toggles struct {
 // Callbacks run in their own goroutine — they may block or call back into
 // the Tray (e.g. Quit → Close) without deadlocking the D-Bus dispatcher.
 type Actions struct {
-	ToggleBind   func() // "Bind/Unbind hotkey" clicked
-	ToggleSubmit func() // "Submit automatically" checkmark clicked
-	ToggleVoice  func() // "Voice output" checkmark clicked
-	Hush         func() // "Hush" clicked
-	Quit         func() // "Quit hey-agent" clicked
+	ToggleBind    func() // "Bind/Unbind hotkey" clicked
+	ToggleSubmit  func() // "Submit automatically" checkmark clicked
+	ToggleVoice   func() // "Voice output" checkmark clicked
+	SetAPIKey     func() // "Set API key…" clicked — opens a dialog
+	VoiceSettings func() // "Voice settings…" clicked — opens a dialog
+	About         func() // "About…" clicked — opens a dialog
+	Hush          func() // "Hush" clicked
+	Quit          func() // "Quit hey-agent" clicked
 }
 
 // Config configures a Tray. All fields have defaults; Actions and Toggles
@@ -500,6 +503,12 @@ func (t *Tray) dispatch(id int32) {
 			fn = t.cfg.Actions.ToggleSubmit
 		case actVoice:
 			fn = t.cfg.Actions.ToggleVoice
+		case actAPIKey:
+			fn = t.cfg.Actions.SetAPIKey
+		case actVoiceUI:
+			fn = t.cfg.Actions.VoiceSettings
+		case actAbout:
+			fn = t.cfg.Actions.About
 		case actHush:
 			fn = t.cfg.Actions.Hush
 		case actQuit:
