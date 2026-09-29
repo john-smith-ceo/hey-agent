@@ -10,15 +10,15 @@ import (
 )
 
 // clientLine builds one list-clients row in clientsFormat field order.
-func clientLine(activity int64, tty, session, sessionID, windowID string, windowIndex int, paneID, flags, windowName string) string {
-	return fmt.Sprintf("%d\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s",
-		activity, tty, session, sessionID, windowID, windowIndex, paneID, flags, windowName)
+func clientLine(activity int64, tty, session, sessionID, windowID string, windowIndex int, paneID, windowName, flags string) string {
+	return fmt.Sprintf("%d,%s,%s,%s,%s,%d,%s,%s,%s",
+		activity, tty, session, sessionID, windowID, windowIndex, paneID, windowName, flags)
 }
 
 // standLine is clientLine with the values every test shares unless it is
 // specifically about them.
 func standLine(activity int64, tty, paneID string) string {
-	return clientLine(activity, tty, "5", "$5", "@1", 1, paneID, "attached,UTF-8", "codex")
+	return clientLine(activity, tty, "5", "$5", "@1", 1, paneID, "codex", "attached,UTF-8")
 }
 
 // fakeTmux serves canned output per tmux subcommand and records every call,
@@ -126,14 +126,14 @@ func TestResolve(t *testing.T) {
 			// Nobody watches through a detached client, so it can neither
 			// win nor trigger ambiguity, however fresh its activity.
 			name: "detached client with fresher activity loses",
-			clients: clientLine(1790580999, "/dev/pts/9", "agt", "$9", "@9", 1, "%9", "", "w") + "\n" +
+			clients: clientLine(1790580999, "/dev/pts/9", "agt", "$9", "@9", 1, "%9", "w", "") + "\n" +
 				standLine(1790580356, "/dev/pts/1", "%7") + "\n",
 			wantPane: "%7",
 			wantTTY:  "/dev/pts/1",
 		},
 		{
 			name:    "only detached clients",
-			clients: clientLine(1790580356, "/dev/pts/9", "agt", "$9", "@9", 1, "%9", "", "w") + "\n",
+			clients: clientLine(1790580356, "/dev/pts/9", "agt", "$9", "@9", 1, "%9", "w", "") + "\n",
 			wantErr: ErrNoClient,
 		},
 		{
@@ -235,7 +235,7 @@ func TestVerify(t *testing.T) {
 			// The user switched windows during recording: the freshest
 			// resolve names another pane, and %7 is still alive elsewhere.
 			name:    "user moved to another window",
-			clients: clientLine(1790580356, "/dev/pts/1", "5", "$5", "@2", 2, "%9", "attached,UTF-8", "hey-agent-voice") + "\n",
+			clients: clientLine(1790580356, "/dev/pts/1", "5", "$5", "@2", 2, "%9", "hey-agent-voice", "attached,UTF-8") + "\n",
 			panes:   "%7\n%9\n%5\n",
 			wantErr: ErrTargetMoved,
 		},
@@ -244,7 +244,7 @@ func TestVerify(t *testing.T) {
 			// from the pane list, which is what separates "gone" from
 			// "moved".
 			name:    "pane closed during recording",
-			clients: clientLine(1790580356, "/dev/pts/1", "5", "$5", "@1", 1, "%9", "attached,UTF-8", "codex") + "\n",
+			clients: clientLine(1790580356, "/dev/pts/1", "5", "$5", "@1", 1, "%9", "codex", "attached,UTF-8") + "\n",
 			panes:   "%9\n%5\n",
 			wantErr: ErrPaneGone,
 		},
@@ -294,7 +294,7 @@ func TestResolveThenVerifyRoundTrip(t *testing.T) {
 	}
 
 	// Now the user switches to window 2, pane %9, while %7 keeps existing.
-	f.clients = clientLine(1790580356, "/dev/pts/1", "5", "$5", "@2", 2, "%9", "attached,UTF-8", "hey-agent-voice") + "\n"
+	f.clients = clientLine(1790580356, "/dev/pts/1", "5", "$5", "@2", 2, "%9", "hey-agent-voice", "attached,UTF-8") + "\n"
 	f.panes = "%7\n%9\n%5\n"
 	if err := r.Verify(ctx, target); !errors.Is(err, ErrTargetMoved) {
 		t.Fatalf("expected ErrTargetMoved, got %v", err)

@@ -15,12 +15,15 @@ import (
 // commands (list-clients, then display-message) — the two values can never
 // disagree about timing because they describe the same instant.
 //
-// Fields are tab-separated: ttys, ids and flags never contain a tab, and the
-// window name — the only field that might — is kept last so SplitN lets it
-// absorb any leftover separators instead of breaking the row.
-const clientsFormat = "#{client_activity}\t#{client_tty}\t#{client_session}\t#{session_id}\t#{window_id}\t#{window_index}\t#{pane_id}\t#{client_flags}\t#{window_name}"
+// Fields are comma-separated. A tab separator is tempting but wrong: tmux
+// renders control characters in -F as '_' for clients with no TMUX env —
+// exactly the daemon case — so tabs never survive. Commas survive; the only
+// user-controlled fields (session and window names) get #{s|,|_|} escapes,
+// and client_flags — the one column commas are native to — sits last so
+// SplitN lets it absorb its own separators.
+const clientsFormat = "#{client_activity},#{client_tty},#{s|,|_|:#{client_session}},#{session_id},#{window_id},#{window_index},#{pane_id},#{s|,|_|:#{window_name}},#{client_flags}"
 
-// clientFieldCount is how many tab-separated fields clientsFormat produces.
+// clientFieldCount is how many comma-separated fields clientsFormat produces.
 const clientFieldCount = 9
 
 // tmuxClient is one parsed list-clients row.
@@ -56,11 +59,11 @@ func parseClients(out []byte) ([]tmuxClient, error) {
 	return clients, nil
 }
 
-// parseClient parses one tab-separated list-clients row.
+// parseClient parses one comma-separated list-clients row.
 func parseClient(line string) (tmuxClient, error) {
-	fields := strings.SplitN(line, "\t", clientFieldCount)
+	fields := strings.SplitN(line, ",", clientFieldCount)
 	if len(fields) < clientFieldCount {
-		return tmuxClient{}, fmt.Errorf("expected %d tab-separated fields, got %d", clientFieldCount, len(fields))
+		return tmuxClient{}, fmt.Errorf("expected %d comma-separated fields, got %d", clientFieldCount, len(fields))
 	}
 	var c tmuxClient
 	var err error
@@ -75,8 +78,8 @@ func parseClient(line string) (tmuxClient, error) {
 		return tmuxClient{}, fmt.Errorf("window_index %q is not a number: %v", fields[5], err)
 	}
 	c.paneID = fields[6]
-	c.attached = hasFlag(fields[7], "attached")
-	c.windowName = fields[8]
+	c.windowName = fields[7]
+	c.attached = hasFlag(fields[8], "attached")
 	// tmux always fills these; an empty one means the output is not what we
 	// asked for. tty and window name stay unchecked on purpose — a
 	// control-mode client can legitimately have no tty, and a window can

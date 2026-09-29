@@ -41,27 +41,27 @@ func TestParseClients(t *testing.T) {
 		},
 		{
 			name:    "too few fields",
-			output:  "100\t/dev/pts/1\t5\t$5\n",
+			output:  "100,/dev/pts/1,5,$5\n",
 			wantErr: ErrNoTmux,
 		},
 		{
 			name:    "non-numeric activity",
-			output:  "soon\t/dev/pts/1\t5\t$5\t@1\t1\t%7\tattached\tw\n",
+			output:  "soon,/dev/pts/1,5,$5,@1,1,%7,w,attached\n",
 			wantErr: ErrNoTmux,
 		},
 		{
 			name:    "non-numeric window index",
-			output:  "100\t/dev/pts/1\t5\t$5\t@1\tone\t%7\tattached\tw\n",
+			output:  "100,/dev/pts/1,5,$5,@1,one,%7,w,attached\n",
 			wantErr: ErrNoTmux,
 		},
 		{
 			name:    "empty pane id",
-			output:  "100\t/dev/pts/1\t5\t$5\t@1\t1\t\tattached\tw\n",
+			output:  "100,/dev/pts/1,5,$5,@1,1,,w,attached\n",
 			wantErr: ErrNoTmux,
 		},
 		{
 			name:    "empty session id",
-			output:  "100\t/dev/pts/1\t5\t\t@1\t1\t%7\tattached\tw\n",
+			output:  "100,/dev/pts/1,5,,@1,1,%7,w,attached\n",
 			wantErr: ErrNoTmux,
 		},
 	}
@@ -119,7 +119,7 @@ func TestParseClientAttachment(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseClient(clientLine(100, "/dev/pts/1", "5", "$5", "@1", 1, "%7", tc.flags, "w"))
+			got, err := parseClient(clientLine(100, "/dev/pts/1", "5", "$5", "@1", 1, "%7", "w", tc.flags))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -130,15 +130,15 @@ func TestParseClientAttachment(t *testing.T) {
 	}
 }
 
-func TestParseClientWindowNameWithTab(t *testing.T) {
-	// The window name is the last field; SplitN lets it keep its own tabs
-	// instead of breaking the row.
-	got, err := parseClient("100\t/dev/pts/1\t5\t$5\t@1\t1\t%7\tattached\tweird\tname")
+func TestParseClientFlagsWithCommas(t *testing.T) {
+	// client_flags is the last field; SplitN lets it keep the commas it is
+	// made of instead of breaking the row.
+	got, err := parseClient("100,/dev/pts/1,5,$5,@1,1,%7,devin,attached,focused,UTF-8")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.windowName != "weird\tname" {
-		t.Fatalf("expected window name to survive a tab, got %q", got.windowName)
+	if got.windowName != "devin" || !got.attached {
+		t.Fatalf("expected name=devin attached=true, got %q %v", got.windowName, got.attached)
 	}
 }
 
