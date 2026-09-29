@@ -36,8 +36,10 @@ const voiceWindow = "hey-agent-voice"
 
 const version = "0.1.3"
 
-// installNames are the names the tool is reachable under.
-var installNames = []string{"hey-agent"}
+// installNames are the names the tool is reachable under. The aliases are
+// the contract with installed plugins: hey-codex serves the Codex pane,
+// hey-claudex serves Claude; the pane name tells which assistant gets voice.
+var installNames = []string{"hey-agent", "hey-codex", "hey-claudex"}
 
 func expectedApp() string {
 	return ""
