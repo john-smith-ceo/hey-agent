@@ -1057,18 +1057,24 @@ func runDaemon(args []string) int {
 	// change, then puts everything back before the process exits.
 	wctx, stopWatch := context.WithCancel(context.Background())
 	watchDone := make(chan struct{})
-	var tr *tray.Tray
+	var tr statusTray
+	trayOnMain := false
 	if !*noTray {
 		sockPath := *socket
 		if sockPath == "" {
 			sockPath = daemon.DefaultSocketPath()
 		}
-		if built, err := newDaemonTray(d, agentEnvFile(), sockPath); err != nil {
+		if built, err := trayFactory(d, agentEnvFile(), sockPath); err != nil {
 			fmt.Fprintf(os.Stderr, "tray unavailable (headless mode): %v\n", err)
 		} else {
 			tr = built
-			go func() { _ = tr.Run(wctx) }()
 			defer tr.Close()
+			// Cocoa wants the status item on the main thread: on darwin the
+			// tray keeps this goroutine and the daemon moves to a spawned one.
+			trayOnMain = runtime.GOOS == "darwin"
+			if !trayOnMain {
+				go func() { _ = tr.Run(wctx) }()
+			}
 		}
 	}
 	go func() {
@@ -1076,7 +1082,18 @@ func runDaemon(args []string) int {
 		watchDaemon(wctx, d, tr, sessionOf, *tmuxSocket, *mode)
 	}()
 	fmt.Fprintf(os.Stderr, "hey-agent %s daemon starting, target %s\n", version, targetLabel(pane))
-	err = d.Run(context.Background())
+	if trayOnMain {
+		daemonDone := make(chan error, 1)
+		go func() {
+			runErr := d.Run(context.Background())
+			stopWatch() // unwinds wctx → the systray loop exits too
+			daemonDone <- runErr
+		}()
+		_ = tr.Run(wctx)
+		err = <-daemonDone
+	} else {
+		err = d.Run(context.Background())
+	}
 	// Give the watcher its moment: the status line has to be handed back
 	// before the process exits, or the session keeps a dead indicator.
 	stopWatch()
@@ -1107,6 +1124,21 @@ func (a speakerAdapter) Speak(ctx context.Context, req daemon.SpeakRequest) erro
 		NormalSpeed:  req.NormalSpeed,
 		SpeedUp:      req.SpeedUp,
 	})
+}
+
+// statusTray is the slice of the tray backends the daemon drives: the D-Bus
+// StatusNotifierItem on Linux and the NSStatusItem on macOS share this face.
+type statusTray interface {
+	Run(context.Context) error
+	Close() error
+	SetState(tray.State)
+	SetToggles(tray.Toggles)
+}
+
+// trayFactory is overridable per-OS: darwin swaps in newDaemonTrayMac via
+// tray_mac.go's init(); every other platform keeps the D-Bus tray.
+var trayFactory = func(d *daemon.Daemon, envPath, socketPath string) (statusTray, error) {
+	return newDaemonTray(d, envPath, socketPath)
 }
 
 // newDaemonTray builds the tray wired to the daemon's own command handlers,
@@ -1242,7 +1274,7 @@ func paneSession(ctx context.Context, socket, pane string) string {
 // status line. The status line belongs to whichever session the delivery
 // target lives in; when the bound session changes, the previous line is
 // restored before the new one is borrowed.
-func watchDaemon(ctx context.Context, d *daemon.Daemon, tr *tray.Tray, sessionOf func() string, socket, mode string) {
+func watchDaemon(ctx context.Context, d *daemon.Daemon, tr statusTray, sessionOf func() string, socket, mode string) {
 	changes, unsubscribe := d.Subscribe()
 	defer unsubscribe()
 	var st *tmux.Status

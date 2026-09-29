@@ -144,7 +144,14 @@ type testRig struct {
 // answers. mutateConfig/tweak adjust Config and the Daemon before Run.
 func startDaemon(t *testing.T, mutateConfig func(*Config), tweak func(*Daemon)) *testRig {
 	t.Helper()
-	dir := t.TempDir()
+	// Unix sockets cap sun_path at ~104 bytes; t.TempDir() under macOS's
+	// /var/folders/…/T is already longer than that, so the listener can never
+	// come up there. A short /tmp prefix keeps the rig working everywhere.
+	dir, err := os.MkdirTemp("/tmp", "ha-test-")
+	if err != nil {
+		t.Fatalf("tempdir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
 	rig := &testRig{
 		bridge:   &fakeBridge{target: "%1", seen: make(chan hotkey.Event, 16)},
 		listener: &fakeListener{},
@@ -329,7 +336,12 @@ func TestAlreadyRunningIsRefused(t *testing.T) {
 }
 
 func TestStaleSocketIsReclaimed(t *testing.T) {
-	dir := t.TempDir()
+	// Short path again: sun_path ~104 bytes, macOS TempDir is too long.
+	dir, err := os.MkdirTemp("/tmp", "ha-test-")
+	if err != nil {
+		t.Fatalf("tempdir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
 	sock := filepath.Join(dir, "hey-agent.sock")
 	// A dead leftover: the file exists but nobody listens.
 	if err := os.WriteFile(sock, []byte("dead"), 0o600); err != nil {

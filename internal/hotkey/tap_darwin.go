@@ -56,6 +56,21 @@ static CGEventRef keyTap(CGEventTapProxy proxy, CGEventType type, CGEventRef eve
 
 static CFMachPortRef createKeyTap(void) {
 	CGEventMask mask = CGEventMaskBit(kCGEventFlagsChanged) | CGEventMaskBit(kCGEventKeyDown);
+	// Registering for the prompts is what lands us in the privacy lists:
+	// CGEventTapCreate alone fails quietly and the user has nothing to enable.
+	// Listen covers passive taps; an active (swallowing) tap like ours needs
+	// Accessibility — AXIsProcessTrustedWithOptions is the prompt for it.
+	static bool requested = false;
+	if (!requested) {
+		requested = true;
+		CGRequestListenEventAccess();
+		const void *keys[] = {kAXTrustedCheckOptionPrompt};
+		const void *vals[] = {kCFBooleanTrue};
+		CFDictionaryRef opts = CFDictionaryCreate(NULL, keys, vals, 1,
+			&kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+		AXIsProcessTrustedWithOptions(opts);
+		CFRelease(opts);
+	}
 	CFMachPortRef tap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionDefault,
 		mask, keyTap, NULL);
 	if (tap == NULL) return NULL;
