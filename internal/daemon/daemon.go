@@ -88,7 +88,9 @@ type Config struct {
 	Mode          bridge.Mode
 	Silence       time.Duration
 	Device        string
+	GainDB        float64
 	APIKey        string
+	Language      string
 	BaseURL       string
 	Model         string
 	Key           hotkey.Key
@@ -216,7 +218,9 @@ func defaultBridge(cfg Config, deps BridgeDeps) (Bridge, error) {
 		Mode:          cfg.Mode,
 		Silence:       cfg.Silence,
 		Device:        cfg.Device,
+		GainDB:        cfg.GainDB,
 		APIKey:        cfg.APIKey,
+		Language:      cfg.Language,
 		BaseURL:       cfg.BaseURL,
 		Model:         cfg.Model,
 		Log:           cfg.Log,

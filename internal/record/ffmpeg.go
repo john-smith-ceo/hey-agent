@@ -20,10 +20,20 @@ type Recorder interface {
 type FFmpeg struct {
 	device  string
 	silence time.Duration
+	gainDB  float64
 }
 
 func NewFFmpeg(device string, silence time.Duration) *FFmpeg {
 	return &FFmpeg{device: device, silence: silence}
+}
+
+// WithGain applies a digital boost to the capture. On macOS the raw
+// avfoundation tap bypasses the processing the built-in mic array usually
+// gets, so dictation lands far quieter than the same voice in other apps —
+// quiet enough for the transcription model to drop it as non-speech.
+func (r *FFmpeg) WithGain(db float64) *FFmpeg {
+	r.gainDB = db
+	return r
 }
 
 // DefaultDevice returns the platform's ffmpeg input device used when the
@@ -53,11 +63,19 @@ func (r *FFmpeg) Record(ctx context.Context, autoStop bool) (string, error) {
 	args := []string{"-hide_banner", "-loglevel", "info"}
 	args = append(args, input...)
 	args = append(args, "-ac", "1", "-ar", "16000")
+	var af []string
 	if autoStop {
 		// -25 dBFS резал тихую речь вместе с паузами: у этого микрофона голос
 		// проваливается под порог, и запись обрывалась посреди фразы. -35 dBFS
 		// держит раздумье внутри записи, а --silence по-прежнему задаёт паузу.
-		args = append(args, "-af", fmt.Sprintf("silencedetect=noise=-35dB:d=%0.3f", r.silence.Seconds()))
+		// Ставится первым — меряет сырой сигнал, а не усиленный.
+		af = append(af, fmt.Sprintf("silencedetect=noise=-35dB:d=%0.3f", r.silence.Seconds()))
+	}
+	if r.gainDB != 0 {
+		af = append(af, fmt.Sprintf("volume=%0.1fdB", r.gainDB))
+	}
+	if len(af) > 0 {
+		args = append(args, "-af", strings.Join(af, ","))
 	}
 	args = append(args, "-c:a", "pcm_s16le", "-y", path)
 	cmd := exec.Command("ffmpeg", args...)

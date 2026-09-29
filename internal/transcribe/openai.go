@@ -22,10 +22,11 @@ const (
 )
 
 type Config struct {
-	BaseURL string
-	Model   string
-	APIKey  string
-	Timeout time.Duration
+	BaseURL  string
+	Model    string
+	APIKey   string
+	Language string
+	Timeout  time.Duration
 }
 
 type Client interface {
@@ -33,10 +34,11 @@ type Client interface {
 }
 
 type Provider struct {
-	baseURL string
-	model   string
-	apiKey  string
-	http    *http.Client
+	baseURL  string
+	model    string
+	apiKey   string
+	language string
+	http     *http.Client
 }
 
 func NewProvider(config Config) *Provider {
@@ -53,10 +55,11 @@ func NewProvider(config Config) *Provider {
 		timeout = RequestTimeout
 	}
 	return &Provider{
-		baseURL: baseURL,
-		model:   model,
-		apiKey:  config.APIKey,
-		http:    &http.Client{Timeout: timeout},
+		baseURL:  baseURL,
+		model:    model,
+		apiKey:   config.APIKey,
+		language: strings.TrimSpace(config.Language),
+		http:     &http.Client{Timeout: timeout},
 	}
 }
 
@@ -124,6 +127,11 @@ func (p *Provider) Transcribe(ctx context.Context, filename string) (string, err
 	}
 	if err := w.WriteField("model", p.model); err != nil {
 		return "", err
+	}
+	if p.language != "" {
+		if err := w.WriteField("language", p.language); err != nil {
+			return "", err
+		}
 	}
 	if err := w.Close(); err != nil {
 		return "", err

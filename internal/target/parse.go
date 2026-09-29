@@ -36,6 +36,7 @@ type tmuxClient struct {
 	windowIndex int
 	paneID      string
 	attached    bool // the "attached" entry of client_flags
+	focused     bool // the "focused" entry of client_flags
 	windowName  string
 }
 
@@ -80,6 +81,7 @@ func parseClient(line string) (tmuxClient, error) {
 	c.paneID = fields[6]
 	c.windowName = fields[7]
 	c.attached = hasFlag(fields[8], "attached")
+	c.focused = hasFlag(fields[8], "focused")
 	// tmux always fills these; an empty one means the output is not what we
 	// asked for. tty and window name stay unchecked on purpose — a
 	// control-mode client can legitimately have no tty, and a window can
@@ -110,13 +112,31 @@ func hasFlag(flags, want string) bool {
 
 // pick chooses the attached client with the freshest activity. Detached
 // clients are filtered first — nobody is watching through them, so they can
-// neither win nor count towards ambiguity. Two attached clients whose
-// activity differs by no more than grace are treated as tied, because tmux
-// measures activity in whole seconds and "same second" is not a real
-// ordering. The tie is refused even if the rivals happen to point at the
-// same pane: the spec asks for a visible signal on ambiguity, and a lucky
-// coincidence today is a silent leak the day the panes differ.
+// neither win nor count towards ambiguity. Focus breaks the tie before
+// activity: the focused terminal is the pane the user is looking at, so a
+// single focused client wins outright. Two attached clients whose activity
+// differs by no more than grace are treated as tied, because tmux measures
+// activity in whole seconds and "same second" is not a real ordering. The
+// tie is refused even if the rivals happen to point at the same pane: the
+// spec asks for a visible signal on ambiguity, and a lucky coincidence
+// today is a silent leak the day the panes differ.
 func pick(clients []tmuxClient, grace time.Duration) (tmuxClient, error) {
+	// A uniquely focused client is the unambiguous winner regardless of
+	// activity timestamps: focus answers "which terminal is the user in"
+	// better than whole-second activity ever can.
+	focused := -1
+	for i := range clients {
+		if clients[i].attached && clients[i].focused {
+			if focused != -1 {
+				focused = -2 // more than one focused client — fall through
+				break
+			}
+			focused = i
+		}
+	}
+	if focused >= 0 {
+		return clients[focused], nil
+	}
 	freshest := -1
 	for i := range clients {
 		if !clients[i].attached {

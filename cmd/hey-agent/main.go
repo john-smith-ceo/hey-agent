@@ -650,6 +650,16 @@ func configure(args []string) int {
 	return 0
 }
 
+// gainDB reads HEY_AGENT_GAIN_DB — a digital boost for the capture. Kept as
+// env config because the right amount is mic-and-room specific.
+func gainDB() float64 {
+	v, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv("HEY_AGENT_GAIN_DB")), 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
 func flagWasSet(fs *flag.FlagSet, name string) bool {
 	wasSet := false
 	fs.Visit(func(f *flag.Flag) {
@@ -1022,7 +1032,9 @@ func runDaemon(args []string) int {
 		Mode:          bridge.Mode(*mode),
 		Silence:       *silence,
 		Device:        *device,
+		GainDB:        gainDB(),
 		APIKey:        key,
+		Language:      os.Getenv("HEY_AGENT_LANGUAGE"),
 		BaseURL:       os.Getenv("HEY_AGENT_BASE_URL"),
 		Model:         os.Getenv("HEY_AGENT_MODEL"),
 		Key:           hotKey,

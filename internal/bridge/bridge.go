@@ -29,10 +29,15 @@ const (
 )
 
 type Config struct {
-	Mode       Mode
-	Silence    time.Duration
-	Device     string
+	Mode    Mode
+	Silence time.Duration
+	Device  string
+	// GainDB boosts the capture digitally — macOS avfoundation gives the raw,
+	// quiet mic signal; a few dB are often the difference between Whisper
+	// hearing speech and returning an empty transcription.
+	GainDB     float64
 	APIKey     string
+	Language   string
 	BaseURL    string
 	Model      string
 	Log        io.Writer
@@ -154,11 +159,12 @@ func New(config Config) (*Bridge, error) {
 	return &Bridge{
 		config:   config,
 		hotkey:   listener,
-		recorder: record.NewFFmpeg(config.Device, config.Silence),
+		recorder: record.NewFFmpeg(config.Device, config.Silence).WithGain(config.GainDB),
 		transcribe: transcribe.NewProvider(transcribe.Config{
-			APIKey:  config.APIKey,
-			BaseURL: config.BaseURL,
-			Model:   config.Model,
+			APIKey:   config.APIKey,
+			BaseURL:  config.BaseURL,
+			Model:    config.Model,
+			Language: config.Language,
 		}),
 		sender:  sender,
 		mode:    config.Mode,
@@ -283,6 +289,11 @@ func (b *Bridge) start(autoStop bool) {
 		text, err := b.transcribe.Transcribe(context.Background(), file)
 		transcribed := time.Since(transcribeStart)
 		if err != nil {
+			if keep := os.Getenv("HEY_AGENT_KEEP_AUDIO"); keep != "" {
+				if cpErr := copyFile(file, keep); cpErr == nil {
+					fmt.Fprintf(b.config.Log, "debug copy of failed audio kept at %s\n", keep)
+				}
+			}
 			b.fail(session, "transcription failed:", err)
 			return
 		}
@@ -362,7 +373,7 @@ func (b *Bridge) watchRuntimeConfig(ctx context.Context) {
 			b.mode = Mode(settings.Mode)
 			b.silence = silence
 			b.submit = settings.Submit
-			b.recorder = record.NewFFmpeg(b.config.Device, silence)
+			b.recorder = record.NewFFmpeg(b.config.Device, silence).WithGain(b.config.GainDB)
 			b.settingsMu.Unlock()
 			last = settings
 			fmt.Fprintf(b.config.Log, "runtime settings: mode=%s silence=%s submit=%t\n", settings.Mode, settings.Silence, settings.Submit)
@@ -448,3 +459,21 @@ func (b *Bridge) stateFor(seq uint64, value string) {
 // Target reports the pane this bridge delivers to; the daemon answers
 // `status` with it.
 func (b *Bridge) Target() string { return b.sender.Target() }
+
+// copyFile is a debug helper: HEY_AGENT_KEEP_AUDIO points at a path where a
+// failed recording is copied before cleanup, so the actual bytes that made
+// the API say "empty" can be inspected.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
+}
