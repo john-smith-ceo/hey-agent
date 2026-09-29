@@ -760,6 +760,20 @@ func listen(args []string) int {
 		fmt.Fprintln(os.Stderr, "cannot tell which pane to speak into; pass --target")
 		return 1
 	}
+	// When the launchd daemon is alive it already owns the hotkey and
+	// resolves the focused pane at record time — spawning the per-pane
+	// listener below would put a second hotkey watcher against it.
+	sock := os.Getenv("HEY_AGENT_SOCKET")
+	if sock == "" {
+		sock = daemon.DefaultSocketPath()
+	}
+	if _, err := daemon.Call(context.Background(), sock, daemon.Request{Cmd: "status"}); err == nil {
+		// The message does not quote the flag-parsed mode/key: the daemon
+		// was launched with its own flags, and they are what applies.
+		fmt.Println("Уже слушаю через демона. Нажмите клавишу — речь уйдёт в сфокусированную панель.")
+		fmt.Println("Остановить: hey-agent stop")
+		return 0
+	}
 	session, err := currentSession()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
