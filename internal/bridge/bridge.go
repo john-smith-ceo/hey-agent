@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -88,6 +90,10 @@ type Bridge struct {
 	recorder   record.Recorder
 	transcribe transcribe.Client
 	sender     Sender
+	// audible gates transcription: nil uses audibleClip (duration + volume
+	// check via ffmpeg). Tests inject a stub so their zero-byte clips still
+	// exercise the pipeline.
+	audible func(string) (bool, string)
 
 	settingsMu sync.RWMutex
 	mode       Mode
@@ -280,6 +286,19 @@ func (b *Bridge) start(autoStop bool) {
 		}
 		defer os.Remove(file)
 		if discard {
+			b.stateFor(session, "idle")
+			return
+		}
+		audible := b.audible
+		if audible == nil {
+			audible = audibleClip
+		}
+		if ok, why := audible(file); !ok {
+			// Empty or near-silent clips come from an accidental tap, a key
+			// bounce, or a microphone that lost its permission — the model
+			// still answers, but with a confident hallucination that lands in
+			// someone's pane. Refusing to send silence upstream is cheaper.
+			fmt.Fprintf(b.config.Log, "recording skipped: %s\n", why)
 			b.stateFor(session, "idle")
 			return
 		}
@@ -477,3 +496,38 @@ func copyFile(src, dst string) error {
 	_, err = io.Copy(out, in)
 	return err
 }
+
+// audibleClip reports whether a recorded wav holds real speech energy. Two
+// cheap signals from one volumedetect pass: the clip must run at least
+// ~700 ms (≈22 KB at 16 kHz s16 mono) and rise above -45 dBFS mean — shorter
+// or quieter is a key bounce or a dead mic, not a dictation.
+func audibleClip(path string) (bool, string) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err.Error()
+	}
+	if info.Size() < 22*1024 {
+		return false, fmt.Sprintf("clip too short (%d bytes)", info.Size())
+	}
+	out, err := exec.Command("ffmpeg", "-hide_banner", "-i", path,
+		"-af", "volumedetect", "-f", "null", "-").CombinedOutput()
+	if err != nil {
+		// On a measurement failure prefer sending the clip — a loud file is
+		// more likely speech than the analyzer being broken.
+		return true, ""
+	}
+	m := meanVolumeRe.FindSubmatch(out)
+	if len(m) < 2 {
+		return true, ""
+	}
+	v, err := strconv.ParseFloat(string(m[1]), 64)
+	if err != nil {
+		return true, ""
+	}
+	if v < -45 {
+		return false, fmt.Sprintf("clip too quiet (mean %0.1f dB)", v)
+	}
+	return true, ""
+}
+
+var meanVolumeRe = regexp.MustCompile(`mean_volume:\s*(-?[0-9.]+) dB`)
