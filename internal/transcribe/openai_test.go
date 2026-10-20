@@ -151,3 +151,145 @@ func TestProviderRequestTimeoutIsBounded(t *testing.T) {
 		t.Fatalf("request was not bounded: %s", elapsed)
 	}
 }
+
+// formFields reads the multipart form of a transcription request (file part
+// included) into name → value.
+func formFields(t *testing.T, r *http.Request) map[string]string {
+	t.Helper()
+	_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := map[string]string{}
+	reader := multipart.NewReader(r.Body, params["boundary"])
+	for {
+		part, nextErr := reader.NextPart()
+		if nextErr == io.EOF {
+			return fields
+		}
+		if nextErr != nil {
+			t.Fatal(nextErr)
+		}
+		data, readErr := io.ReadAll(part)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		fields[part.FormName()] = string(data)
+	}
+}
+
+func writeAudio(t *testing.T) string {
+	t.Helper()
+	file := filepath.Join(t.TempDir(), "audio.wav")
+	if err := os.WriteFile(file, []byte("audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+
+func TestTranscribeSendsVocabularyPrompt(t *testing.T) {
+	vocabulary := filepath.Join(t.TempDir(), "vocabulary.txt")
+	if err := os.WriteFile(vocabulary, []byte("# names to keep\nДжарвис\n\n  ВСадике  \n# Devin is spelled in Russian\nДевин\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := NewProvider(Config{APIKey: "test-key", BaseURL: "https://provider.invalid/v1", VocabularyFile: vocabulary})
+	c.http = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if got := formFields(t, r)["prompt"]; got != "Джарвис, ВСадике, Девин." {
+			t.Errorf("prompt = %q", got)
+		}
+		return providerResponse(r, http.StatusOK, `{"text":"Джарвис"}`), nil
+	})}
+	if _, err := c.Transcribe(context.Background(), writeAudio(t)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTranscribeWithoutVocabularySendsNoPrompt(t *testing.T) {
+	for name, path := range map[string]string{"unset": "", "missing": filepath.Join(t.TempDir(), "absent.txt")} {
+		c := NewProvider(Config{APIKey: "test-key", BaseURL: "https://provider.invalid/v1", VocabularyFile: path})
+		c.http = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if _, ok := formFields(t, r)["prompt"]; ok {
+				t.Errorf("%s vocabulary: prompt must not be sent", name)
+			}
+			return providerResponse(r, http.StatusOK, `{"text":"ok"}`), nil
+		})}
+		if _, err := c.Transcribe(context.Background(), writeAudio(t)); err != nil {
+			t.Fatalf("%s vocabulary: %v", name, err)
+		}
+	}
+}
+
+func TestTranscribeRetriesWithoutPromptWhenRejected(t *testing.T) {
+	vocabulary := filepath.Join(t.TempDir(), "vocabulary.txt")
+	if err := os.WriteFile(vocabulary, []byte("Джарвис\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := NewProvider(Config{APIKey: "test-key", BaseURL: "https://provider.invalid/v1", VocabularyFile: vocabulary})
+	var prompts []string
+	c.http = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		prompt := formFields(t, r)["prompt"]
+		prompts = append(prompts, prompt)
+		if prompt != "" {
+			return providerResponse(r, http.StatusBadRequest, `{"error":{"param":"prompt"}}`), nil
+		}
+		return providerResponse(r, http.StatusOK, `{"text":"без подсказки"}`), nil
+	})}
+	text, err := c.Transcribe(context.Background(), writeAudio(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "без подсказки" || len(prompts) != 2 || prompts[0] == "" || prompts[1] != "" {
+		t.Fatalf("text = %q, prompts = %q", text, prompts)
+	}
+}
+
+func TestTranscribeDoesNotRetryOtherErrors(t *testing.T) {
+	vocabulary := filepath.Join(t.TempDir(), "vocabulary.txt")
+	if err := os.WriteFile(vocabulary, []byte("Джарвис\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := NewProvider(Config{APIKey: "test-key", BaseURL: "https://provider.invalid/v1", VocabularyFile: vocabulary})
+	calls := 0
+	c.http = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return providerResponse(r, http.StatusUnauthorized, "denied"), nil
+	})}
+	if _, err := c.Transcribe(context.Background(), writeAudio(t)); err == nil {
+		t.Fatal("401 must stay an error")
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+}
+
+func TestVocabularyPromptStaysShort(t *testing.T) {
+	vocabulary := filepath.Join(t.TempDir(), "vocabulary.txt")
+	if err := os.WriteFile(vocabulary, []byte(strings.Repeat("Длинноеслово\n", 200)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prompt := vocabularyPrompt(vocabulary)
+	if n := len([]rune(prompt)); n == 0 || n > maxPromptRunes+1 {
+		t.Fatalf("prompt length = %d runes", n)
+	}
+	if !strings.HasSuffix(prompt, "Длинноеслово.") {
+		t.Fatalf("prompt must end with a whole word: %q", prompt[len(prompt)-30:])
+	}
+}
+
+func TestTranscribeSendsLanguageWithPrompt(t *testing.T) {
+	vocabulary := filepath.Join(t.TempDir(), "vocabulary.txt")
+	if err := os.WriteFile(vocabulary, []byte("Джарвис\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := NewProvider(Config{APIKey: "test-key", BaseURL: "https://provider.invalid/v1", Language: " ru ", VocabularyFile: vocabulary})
+	c.http = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		fields := formFields(t, r)
+		if fields["language"] != "ru" || fields["prompt"] != "Джарвис." {
+			t.Errorf("language = %q, prompt = %q", fields["language"], fields["prompt"])
+		}
+		return providerResponse(r, http.StatusOK, `{"text":"ok"}`), nil
+	})}
+	if _, err := c.Transcribe(context.Background(), writeAudio(t)); err != nil {
+		t.Fatal(err)
+	}
+}
