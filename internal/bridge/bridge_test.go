@@ -227,6 +227,7 @@ func TestStartIgnoredWhilePreviousDeliveryInFlight(t *testing.T) {
 		recorder:   recorder,
 		transcribe: transcriber,
 		sender:     fakeSender{},
+		audible:    func(string) (bool, string) { return true, "" },
 	}
 
 	b.start(true)
@@ -369,6 +370,7 @@ func TestCancelNeverCallsTranscriber(t *testing.T) {
 		recorder:   recorder,
 		transcribe: transcriber,
 		sender:     fakeSender{},
+		audible:    func(string) (bool, string) { return true, "" },
 	}
 
 	b.start(true)
