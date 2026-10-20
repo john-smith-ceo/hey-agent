@@ -69,6 +69,7 @@ func TestStartFailsClosedWhenResolveFails(t *testing.T) {
 		recorder:   recorder,
 		transcribe: &countingTranscriber{called: make(chan struct{}, 1)},
 		sender:     sender,
+		audible:    func(string) (bool, string) { return true, "" },
 	}
 
 	b.start(true)
@@ -110,6 +111,7 @@ func TestBeginRecordingRunsBeforeMicrophone(t *testing.T) {
 		recorder:   recorder,
 		transcribe: transcribeFunc(func(context.Context, string) (string, error) { return "", nil }),
 		sender:     sender,
+		audible:    func(string) (bool, string) { return true, "" },
 	}
 	b.start(true)
 	first := <-order
@@ -303,6 +305,7 @@ func TestOneRecordingDeliversExactlyOnce(t *testing.T) {
 		recorder:   recorder,
 		transcribe: transcribeFunc(func(context.Context, string) (string, error) { return "один раз", nil }),
 		sender:     sender,
+		audible:    func(string) (bool, string) { return true, "" },
 	}
 
 	b.start(true)
@@ -338,6 +341,7 @@ func TestTranscribeErrorDeliversNothing(t *testing.T) {
 		recorder:   recorder,
 		transcribe: transcribeFunc(func(context.Context, string) (string, error) { return "", errors.New("provider 500") }),
 		sender:     sender,
+		audible:    func(string) (bool, string) { return true, "" },
 	}
 
 	b.start(true)
